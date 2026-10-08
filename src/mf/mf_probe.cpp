@@ -117,7 +117,14 @@ ProbeResult probe() {
 }
 
 std::unique_ptr<Decoder> create(const DecoderConfig& config, const Capability& cap, std::string* err) {
-    return mf::MfDecoder::create(config.codec, cap.hardware, config.output, err);
+    auto d = mf::MfDecoder::create(config.codec, cap.hardware, config.output, err);
+    // An MFT that refuses the D3D11 device falls back to software, which
+    // Require does not accept.
+    if (d && config.hardware == Hardware::Require && !d->hardware()) {
+        if (err) *err = std::string("the ") + codec_name(config.codec) + " decoder refused the D3D11 device";
+        return nullptr;
+    }
+    return d;
 }
 
 }  // namespace
