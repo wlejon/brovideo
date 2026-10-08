@@ -17,9 +17,11 @@ std::vector<uint8_t> pattern(uint32_t w, uint32_t h, uint32_t seed) {
     for (uint32_t y = 0; y < h; ++y) {
         for (uint32_t x = 0; x < w; ++x) {
             uint8_t* p = &px[(size_t(y) * w + x) * 4];
-            p[0] = uint8_t(x * 3 + seed);
-            p[1] = uint8_t(y * 5);
-            p[2] = uint8_t((x + y) / 4 == 3 ? 0 : seed * 7);
+            // Flat areas (runs) and noisy ones (literals).
+            const bool flat = ((x / 8) + (y / 8) + seed) % 3 == 0;
+            p[0] = flat ? 10 : uint8_t(x * 7 + seed);
+            p[1] = flat ? 20 : uint8_t(y * 13 + seed * 3);
+            p[2] = flat ? 30 : uint8_t((x ^ y) + seed);
             p[3] = 255;
         }
     }

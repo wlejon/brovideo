@@ -267,7 +267,7 @@ double mean_kb(const std::vector<Packet>& pkts, size_t from, size_t to) {
 
 // reconfigure(), all in one encoder: the bitrate drops to a quarter
 // mid-stream, then rises again, then the size changes. Each change starts
-// with a keyframe. On noise (which fills any budget: the encoder pads
+// with a keyframe. On grain (which fills any budget: the encoder pads
 // nothing) the predicted packets follow the bitrate down; on the pattern,
 // the stream after the rise and the stream after the size change decode to
 // their sources at the configured sizes.
@@ -284,7 +284,9 @@ void test_reconfigure(Codec codec) {
         for (uint32_t n = first; n < first + count; ++n) {
             auto px = pattern(fw, fh, n);
             if (noise) {
-                for (auto& b : px) b = uint8_t((rng = rng * 1664525u + 1013904223u) >> 24);
+                // Low-amplitude grain: full-range noise drives H.264 to QP 51
+                // at 8 Mbit/s already, where no budget can lower it further.
+                for (auto& b : px) b = uint8_t(112 + ((rng = rng * 1664525u + 1013904223u) >> 27));
             }
             Frame f;
             f.width = fw;
