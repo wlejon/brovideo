@@ -265,21 +265,27 @@ double mean_kb(const std::vector<Packet>& pkts, size_t from, size_t to) {
     return to > from ? sum / double(to - from) : 0;
 }
 
-// reconfigure(): the bitrate drops to a third mid-stream, then the size
-// changes, all in one encoder. Each change starts with a keyframe; the
-// predicted packets after the drop shrink with it; the stream after the size
-// change decodes at the new size.
+// reconfigure(), all in one encoder: the bitrate drops to a quarter
+// mid-stream, then rises again, then the size changes. Each change starts
+// with a keyframe. On noise (which fills any budget: the encoder pads
+// nothing) the predicted packets follow the bitrate down; on the pattern,
+// the stream after the rise and the stream after the size change decode to
+// their sources at the configured sizes.
 void test_reconfigure(Codec codec) {
     check::phase(std::string(codec_name(codec)) + ": reconfigure bitrate, then size");
     const uint32_t w = 1280, h = 720;
     std::string err;
-    auto enc = make_encoder(codec, w, h, 36000, &err);
+    auto enc = make_encoder(codec, w, h, 8000, &err);
     CHECK(enc != nullptr);
     if (!enc) return;
     std::vector<Packet> pkts;
-    auto encode_run = [&](uint32_t fw, uint32_t fh, uint32_t first, uint32_t count) {
+    uint32_t rng = 1;
+    auto encode_run = [&](uint32_t fw, uint32_t fh, uint32_t first, uint32_t count, bool noise) {
         for (uint32_t n = first; n < first + count; ++n) {
             auto px = pattern(fw, fh, n);
+            if (noise) {
+                for (auto& b : px) b = uint8_t((rng = rng * 1664525u + 1013904223u) >> 24);
+            }
             Frame f;
             f.width = fw;
             f.height = fh;
@@ -289,24 +295,30 @@ void test_reconfigure(Codec codec) {
             pkts.push_back(std::move(pkt));
         }
     };
-    encode_run(w, h, 0, 60);
-    EncoderConfig low = enc->config();
-    low.bitrate_kbps = 12000;
-    CHECK(enc->reconfigure(low, &err));
-    encode_run(w, h, 60, 60);
+    encode_run(w, h, 0, 60, true);
+    EncoderConfig cfg = enc->config();
+    cfg.bitrate_kbps = 2000;
+    CHECK(enc->reconfigure(cfg, &err));
+    encode_run(w, h, 60, 60, true);
     CHECK(pkts[60].keyframe);
     for (size_t i = 61; i < pkts.size(); ++i) CHECK(!pkts[i].keyframe);
     // Predicted packets well after each start, where rate control has settled.
     const double high_kb = mean_kb(pkts, 30, 60), low_kb = mean_kb(pkts, 90, 120);
-    std::printf("   predicted packets: %.1f kB at 36 Mbit/s, %.1f kB at 12 Mbit/s (budget %.1f / %.1f)\n", high_kb,
-                low_kb, 36000.0 / 8 / 60, 12000.0 / 8 / 60);
-    CHECK(low_kb < high_kb / 2);
-    CHECK(low_kb < 12000.0 / 8 / 60 * 1.5);  // near the new budget, not the old one
-    if (g_ffmpeg) {
-        std::vector<Packet> first(pkts.begin(), pkts.end());
-        std::vector<uint64_t> source(first.size());
-        for (size_t i = 0; i < source.size(); ++i) source[i] = i;
-        verify_stream(codec, first, source, w, h, std::string(codec_name(codec)) + "-rebitrate");
+    std::printf("   noise, predicted packets: %.1f kB at 8 Mbit/s, %.1f kB at 2 Mbit/s (budgets %.1f / %.1f)\n",
+                high_kb, low_kb, 8000.0 / 8 / 60, 2000.0 / 8 / 60);
+    CHECK(low_kb < high_kb / 2.5);
+    CHECK(low_kb < 2000.0 / 8 / 60 * 1.5);  // near the new budget, not the old one
+
+    cfg.bitrate_kbps = 12000;
+    CHECK(enc->reconfigure(cfg, &err));
+    size_t at = pkts.size();
+    encode_run(w, h, 3000, 40, false);
+    CHECK(pkts[at].keyframe);
+    {
+        std::vector<Packet> tail(pkts.begin() + std::ptrdiff_t(at), pkts.end());
+        std::vector<uint64_t> source(tail.size());
+        for (size_t i = 0; i < source.size(); ++i) source[i] = 3000 + i;
+        verify_stream(codec, tail, source, w, h, std::string(codec_name(codec)) + "-rebitrate");
     }
 
     const uint32_t w2 = 960, h2 = 544;
@@ -314,8 +326,8 @@ void test_reconfigure(Codec codec) {
     resized.width = w2;
     resized.height = h2;
     CHECK(enc->reconfigure(resized, &err));
-    const size_t at = pkts.size();
-    encode_run(w2, h2, 2000, 30);
+    at = pkts.size();
+    encode_run(w2, h2, 2000, 30, false);
     CHECK(pkts[at].keyframe);
     std::vector<Packet> tail(pkts.begin() + std::ptrdiff_t(at), pkts.end());
     std::vector<uint64_t> source(tail.size());
