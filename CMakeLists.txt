@@ -4,7 +4,7 @@ project(brovideo VERSION 0.1.0 LANGUAGES CXX)
 
 # Dependencies (cmake/bro_deps.cmake): an outer project's target wins (under bro
 # these are all bro's), else the ../<name> working tree beside the top-level
-# project, else the pinned commit, fetched at configure.
+# project, else the head of its main, fetched at configure.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
 
 # Targets
@@ -58,7 +58,7 @@ brovideo_warnings(brovideo)
 # ---- VA-API encoder (Linux) --------------------------------------------------------
 # Auto: on when libva, libva-drm and libdrm (for the fourcc header) are found.
 # It also needs brodmabuf (fence waits), a bro_dependency (cmake/bro_deps.cmake):
-# an existing brodmabuf target (bro's), else ../brodmabuf, else the pinned commit.
+# an existing brodmabuf target (bro's), else ../brodmabuf, else the head of its main.
 if(UNIX AND NOT APPLE)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
