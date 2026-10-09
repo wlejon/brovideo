@@ -74,7 +74,7 @@ if(UNIX AND NOT APPLE)
         message(FATAL_ERROR "BROVIDEO_WITH_VAAPI is ON but libva, libva-drm and libdrm were not all found")
     endif()
     if(BROVIDEO_WITH_VAAPI)
-        bro_dependency(brodmabuf GITHUB wlejon/brodmabuf REF fc84728b39b2172e0312f10714a5332be543f585
+        bro_dependency(brodmabuf GITHUB wlejon/brodmabuf
                        OPTIONS BRODMABUF_BUILD_TESTS=OFF)
     endif()
     if(BROVIDEO_WITH_VAAPI)
