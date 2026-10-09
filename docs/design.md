@@ -43,7 +43,8 @@ tests/          test_raw (everywhere), test_vaapi (Linux), test_mf (Windows);
 CMake target `brovideo` (alias `brovideo::brovideo`). Options:
 `BROVIDEO_BUILD_TESTS` (on), `BROVIDEO_WITH_VAAPI` (auto on Linux when libva,
 libva-drm and libdrm are found; it needs brodmabuf: an existing `brodmabuf`
-target, else `-DBRODMABUF_DIR`, else `../brodmabuf`), `BROVIDEO_WITH_MF` (on
+target, else `../brodmabuf`, else the commit pinned in CMakeLists.txt,
+fetched by cmake/bro_deps.cmake), `BROVIDEO_WITH_MF` (on
 for Windows). A top-level MSVC build links the CRT statically; inside another
 project brovideo takes that project's CRT.
 

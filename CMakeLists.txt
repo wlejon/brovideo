@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.24)
 
 project(brovideo VERSION 0.1.0 LANGUAGES CXX)
 
+# Dependencies (cmake/bro_deps.cmake): an outer project's target wins (under bro
+# these are all bro's), else the ../<name> working tree beside the top-level
+# project, else the pinned commit, fetched at configure.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
+
 # Targets
 #   brovideo::brovideo   codec enum, frames / packets / pictures, Encoder / Decoder,
 #                        the capability probe, and the backends this platform has
@@ -52,8 +57,8 @@ brovideo_warnings(brovideo)
 
 # ---- VA-API encoder (Linux) --------------------------------------------------------
 # Auto: on when libva, libva-drm and libdrm (for the fourcc header) are found.
-# It also needs brodmabuf (fence waits): an existing brodmabuf target (bro's),
-# else -DBRODMABUF_DIR, else a checkout beside this one (../brodmabuf).
+# It also needs brodmabuf (fence waits), a bro_dependency (cmake/bro_deps.cmake):
+# an existing brodmabuf target (bro's), else ../brodmabuf, else the pinned commit.
 if(UNIX AND NOT APPLE)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
@@ -68,17 +73,9 @@ if(UNIX AND NOT APPLE)
     if(BROVIDEO_WITH_VAAPI AND NOT BROVIDEO_VA_FOUND)
         message(FATAL_ERROR "BROVIDEO_WITH_VAAPI is ON but libva, libva-drm and libdrm were not all found")
     endif()
-    if(BROVIDEO_WITH_VAAPI AND NOT TARGET brodmabuf)
-        if(NOT BRODMABUF_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../brodmabuf/CMakeLists.txt")
-            set(BRODMABUF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../brodmabuf")
-        endif()
-        if(NOT BRODMABUF_DIR OR NOT EXISTS "${BRODMABUF_DIR}/CMakeLists.txt")
-            message(FATAL_ERROR
-                "brovideo's VA-API encoder needs brodmabuf: check it out beside this repository "
-                "(../brodmabuf), pass -DBRODMABUF_DIR=<path>, or configure with -DBROVIDEO_WITH_VAAPI=OFF")
-        endif()
-        set(BRODMABUF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        add_subdirectory("${BRODMABUF_DIR}" "${CMAKE_BINARY_DIR}/brodmabuf" EXCLUDE_FROM_ALL)
+    if(BROVIDEO_WITH_VAAPI)
+        bro_dependency(brodmabuf GITHUB wlejon/brodmabuf REF fc84728b39b2172e0312f10714a5332be543f585
+                       OPTIONS BRODMABUF_BUILD_TESTS=OFF)
     endif()
     if(BROVIDEO_WITH_VAAPI)
         message(STATUS "brovideo: VA-API encoder enabled (libva ${BROVIDEO_VA_libva_VERSION})")

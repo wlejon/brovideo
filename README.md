@@ -52,8 +52,8 @@ cmake --build build --config Release
 ctest --test-dir build -C Release
 ```
 
-Linux (needs libva, libva-drm and libdrm for the VA-API encoder, and
-[brodmabuf](../brodmabuf) checked out beside this repository):
+Linux (needs libva, libva-drm and libdrm for the VA-API encoder; it also uses
+[brodmabuf](https://github.com/wlejon/brodmabuf), fetched at configure):
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
@@ -61,8 +61,11 @@ ctest --test-dir build
 ```
 
 Options: `BROVIDEO_BUILD_TESTS` (on), `BROVIDEO_WITH_VAAPI` (on on Linux when
-libva is found), `BROVIDEO_WITH_MF` (on on Windows). brodmabuf resolves as an
-existing `brodmabuf` target, then `-DBRODMABUF_DIR`, then `../brodmabuf`.
+libva is found), `BROVIDEO_WITH_MF` (on on Windows). A plain `git clone` is
+enough: brodmabuf is a `bro_dependency()` pin in `CMakeLists.txt`
+(`cmake/bro_deps.cmake`), resolved as an existing `brodmabuf` target, then a
+working tree at `../brodmabuf`, then the pinned commit, fetched at configure
+(override with `-DFETCHCONTENT_SOURCE_DIR_BRODMABUF=<path>`).
 
 Tests use ffmpeg as an oracle when it is on PATH (never linked).
 Environment: `BROVIDEO_HARDWARE=0` decodes in software,
