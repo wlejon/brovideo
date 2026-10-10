@@ -15,6 +15,9 @@
 //   - release is called exactly once per frame, before encode() returns, and
 //     the frame's memory is scribbled over in the release callback, so any
 //     read after release would show as a PSNR failure.
+//   - encode_repeat(): after a big change on a still screen, repeats of the
+//     kept picture sharpen it to a settled still picture's quality and end
+//     in near-empty packets; a keyframe repeat decodes alone.
 //   - Per-frame encode latency of dmabuf frames at 1920x1080 and 2560x1440.
 #include "brovideo/brovideo.h"
 #include "check.h"
@@ -337,6 +340,148 @@ void test_reconfigure(Codec codec) {
     verify_stream(codec, tail, source, w2, h2, std::string(codec_name(codec)) + "-resized");
 }
 
+// A desktop-like picture: a light page of dark text-like strokes (1-2 px,
+// the detail rate control starves first) on coloured panels. Each seed lays
+// it out differently, so one seed after another is a big change, a window
+// opening.
+std::vector<uint8_t> text_page(uint32_t w, uint32_t h, uint32_t seed) {
+    std::vector<uint8_t> px(size_t(w) * h * 4, 255);
+    uint32_t rng = seed * 2654435761u + 1;
+    const auto next = [&] { return (rng = rng * 1664525u + 1013904223u) >> 8; };
+    const auto rect = [&](uint32_t x0, uint32_t y0, uint32_t rw, uint32_t rh, uint8_t r, uint8_t g, uint8_t b) {
+        for (uint32_t y = y0; y < std::min(h, y0 + rh); ++y) {
+            for (uint32_t x = x0; x < std::min(w, x0 + rw); ++x) {
+                uint8_t* p = &px[(size_t(y) * w + x) * 4];
+                p[0] = r, p[1] = g, p[2] = b;
+            }
+        }
+    };
+    for (int i = 0; i < 6; ++i) {
+        rect(next() % w, next() % h, 200 + next() % 600, 100 + next() % 400, uint8_t(150 + next() % 100),
+             uint8_t(150 + next() % 100), uint8_t(150 + next() % 100));
+    }
+    // Lines of glyphs: 7x10 cells of random strokes, 4 px between lines.
+    for (uint32_t ly = 8 + seed % 7; ly + 10 < h; ly += 14) {
+        uint32_t x = 8 + next() % 40;
+        const uint32_t end = w - 8 - next() % 300;
+        while (x + 7 < end) {
+            const uint32_t glyph = next();
+            for (int s = 0; s < 4; ++s) {
+                const uint32_t bits = glyph >> (s * 5);
+                if (bits & 1) rect(x + (bits >> 1) % 6, ly, 1 + (bits >> 4 & 1), 10, 30, 30, 40);  // a stem
+                else rect(x, ly + (bits >> 1) % 9, 6, 1, 30, 30, 40);                            // a bar
+            }
+            x += 8;
+            if (next() % 7 == 0) x += 8;  // a space
+        }
+    }
+    return px;
+}
+
+// encode_repeat(): an encoder fed frames only when the picture changes (a
+// compositor holding an unchanged screen) leaves the first frame after a big
+// change as soft as rate control made it, for as long as the screen stays
+// still. Repeats of the kept picture sharpen it, end in near-empty packets,
+// and a repeat can be a keyframe that decodes alone.
+void test_repeat(Codec codec) {
+    check::phase(std::string(codec_name(codec)) + ": encode_repeat sharpens a still picture");
+    const uint32_t w = 1920, h = 1080, kbps = 20000;  // broremote's default stream
+    const int settle = 30, max_repeats = 60;
+    // broremote's rule: repeat until two packets running are under a quarter
+    // of the per-frame budget (bitrate / fps), for at most a second. Not a
+    // smaller bar: HEVC (radeonsi) never codes a still picture as empty, it
+    // levels off near a seventh of the budget; and not one packet: the
+    // frames after a keyframe that overdrew the HRD buffer are starved small.
+    const size_t converged = size_t(kbps) * 1000 / 8 / 60 / 4;
+    std::string err;
+    auto enc = make_encoder(codec, w, h, kbps, &err);
+    CHECK(enc != nullptr);
+    if (!enc) return;
+    std::vector<Packet> pkts;
+    std::vector<int> source;  // the page each packet shows
+    const std::vector<uint8_t> pages[2] = {text_page(w, h, 1), text_page(w, h, 2)};
+    const auto encode = [&](int page) {
+        Frame f;
+        f.width = w;
+        f.height = h;
+        f.cpu = pages[page].data();
+        f.pts_ns = int64_t(pkts.size());
+        Packet pkt;
+        CHECK(enc->encode(f, false, {}, pkt, &err));
+        pkts.push_back(std::move(pkt));
+        source.push_back(page);
+    };
+    const auto repeat = [&](bool keyframe) {
+        Packet pkt;
+        const bool ok = enc->encode_repeat(keyframe, pkt, &err);
+        CHECK(ok);
+        if (!ok) std::printf("   encode_repeat: %s\n", err.c_str());
+        CHECK_EQ(pkt.keyframe, keyframe);
+        CHECK_EQ(is_keyframe(codec, pkt.data), keyframe);
+        CHECK(!pkt.data.empty());
+        pkts.push_back(std::move(pkt));
+        source.push_back(source.back());
+    };
+    err.clear();
+    Packet none;
+    CHECK(!enc->encode_repeat(false, none, &err));  // no picture yet
+    CHECK(err.empty());
+    // Repeats until converged; the index of the last.
+    const auto sharpen = [&] {
+        int small = 0;
+        for (int i = 0; i < max_repeats && small < 2; ++i) {
+            repeat(false);
+            small = pkts.back().data.size() < converged ? small + 1 : 0;
+        }
+        CHECK_EQ(small, 2);
+        return pkts.size() - 1;
+    };
+    for (int i = 0; i < settle; ++i) encode(0);  // a still screen, rate control settled
+    const size_t change = pkts.size();
+    encode(1);                                   // the window opens, then the screen holds
+    CHECK(enc->can_repeat());
+    const size_t sharp = sharpen();
+    const size_t key = pkts.size();
+    repeat(true);                                // a viewer joins the still screen
+    const size_t key_sharp = sharpen();
+    CHECK_EQ(pkts[change].pts_ns, pkts[key].pts_ns);
+    if (!g_ffmpeg) return;
+
+    const std::string path = path_for(std::string(codec_name(codec)) + "-repeat");
+    oracle::write_file(path, concat(pkts, 0, pkts.size()));
+    std::vector<std::vector<uint8_t>> luma;
+    std::string log;
+    CHECK(oracle::decode(path, codec, w, h, luma, log, true));
+    CHECK_EQ(luma.size(), pkts.size());
+    CHECK_EQ(log, std::string());
+    if (luma.size() != pkts.size()) return;
+    const std::vector<double> ideal[2] = {oracle::ideal_luma(pages[0].data(), w, h),
+                                          oracle::ideal_luma(pages[1].data(), w, h)};
+    std::vector<double> q(pkts.size());
+    for (size_t i = 0; i < pkts.size(); ++i) q[i] = oracle::psnr_luma(luma[i].data(), ideal[source[i]]);
+    std::printf("   still page %.2f dB; after the change %.2f dB (%.1f kB); %zu repeats to %.2f dB:", q[change - 1],
+                q[change], double(pkts[change].data.size()) / 1024.0, sharp - change, q[sharp]);
+    for (size_t i = change + 1; i <= sharp; ++i) std::printf(" %.1f/%.0fk", q[i], double(pkts[i].data.size()) / 1024.0);
+    std::printf("\n   keyframe repeat %.2f dB (%.1f kB), %zu repeats to %.2f dB:", q[key],
+                double(pkts[key].data.size()) / 1024.0, key_sharp - key, q[key_sharp]);
+    for (size_t i = key + 1; i <= key_sharp; ++i) std::printf(" %.1f/%.0fk", q[i], double(pkts[i].data.size()) / 1024.0);
+    std::printf("\n");
+    CHECK(q[sharp] >= kMinPsnr);
+    CHECK(q[sharp] >= q[change] + 1.0);      // the repeats did the work
+    CHECK(q[sharp] >= q[change - 1] - 1.0);  // as sharp as a settled still picture
+    // After a keyframe the encoders' rate control may level off lower (AV1
+    // near 40 dB here): only sharper, and past the bar.
+    CHECK(q[key_sharp] >= kMinPsnr);
+    CHECK(q[key_sharp] >= q[key] + 10.0);
+    // The keyframe repeat and its repeats decode alone, as a joining viewer sees them.
+    const std::string kpath = path + ".key";
+    oracle::write_file(kpath, concat(pkts, key, pkts.size()));
+    std::vector<std::vector<uint8_t>> alone;
+    CHECK(oracle::decode(kpath, codec, w, h, alone, log, true));
+    CHECK_EQ(alone.size(), pkts.size() - key);
+    if (!alone.empty()) CHECK(std::abs(oracle::psnr_luma(alone.back().data(), ideal[1]) - q[key_sharp]) < 0.01);
+}
+
 std::string render_node() {
     if (const char* forced = std::getenv("BROVIDEO_VAAPI_DEVICE"); forced && *forced) return forced;
     std::vector<std::string> nodes;
@@ -534,6 +679,7 @@ int main() {
         test_bgra(c);
         test_size_change(c);
         test_reconfigure(c);
+        test_repeat(c);
         test_dmabuf(c);
         test_latency(c);
     }

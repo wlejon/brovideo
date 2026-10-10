@@ -50,6 +50,21 @@ public:
     bool encode(const Frame& frame, bool force_keyframe, const std::function<void()>& release, Packet& out,
                 std::string* err);
 
+    // Encodes the last frame's picture again, from the encoder's own copy of
+    // it (no source frame), into `out` with that frame's pts. A predicted
+    // repeat codes what the picture before it got wrong: the first frame
+    // after a big change, which rate control leaves soft, sharpens over a
+    // few repeats, and a picture already at the bitrate's quality comes out
+    // as a near-empty packet. For a source that sends frames only when
+    // something changed (a compositor holding an unchanged screen), so a
+    // still picture does not stay soft, and a keyframe can be had without a
+    // new frame. The keyframe rules are encode()'s. False with *err unset
+    // when there is no picture to repeat (none since a failure or
+    // reconfigure(), or the backend keeps none: repeats() false); false with
+    // *err when the encode failed, as encode().
+    bool encode_repeat(bool force_keyframe, Packet& out, std::string* err);
+    [[nodiscard]] bool can_repeat() const noexcept { return has_picture_ && repeats(); }
+
     // The next encode() makes a keyframe. Any thread.
     void request_keyframe() noexcept { keyframe_requested_.store(true, std::memory_order_relaxed); }
 
@@ -69,12 +84,18 @@ protected:
                               std::string* err) = 0;
     // Called with the new config before config_ changes; false refuses it.
     virtual bool apply_config(const EncoderConfig& next, std::string* err) = 0;
+    // A backend that keeps the last picture (its encoder input) overrides
+    // both: encode_repeat_frame codes that picture again.
+    [[nodiscard]] virtual bool repeats() const { return false; }
+    virtual bool encode_repeat_frame(bool /*keyframe*/, Packet& /*out*/, std::string* /*err*/) { return false; }
 
     EncoderConfig config_;
 
 private:
     std::atomic<bool> keyframe_requested_{false};
     bool need_keyframe_ = true;
+    bool has_picture_ = false;  // a frame was encoded since the last failure or reconfigure()
+    int64_t last_pts_ns_ = 0;
 };
 
 // An encoder for config.codec: the best capability the probe found

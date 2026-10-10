@@ -211,6 +211,69 @@ void test_encoder_contract() {
     CHECK(out.data == small);
 }
 
+void test_encode_repeat() {
+    check::phase("encoder: encode_repeat");
+    std::string err;
+    const uint32_t w = 40, h = 24;
+    auto enc = raw_encoder(w, h, &err);
+    auto dec = raw_decoder(&err);
+    CHECK(enc && dec);
+    if (!enc || !dec) return;
+    Packet pkt;
+    Picture out;
+    // Nothing to repeat before the first frame: false, no error.
+    err.clear();
+    CHECK(!enc->can_repeat());
+    CHECK(!enc->encode_repeat(false, pkt, &err));
+    CHECK(err.empty());
+    CHECK(pkt.data.empty());
+
+    const auto src = pattern(w, h, 7);
+    Frame f = cpu_frame(src, w, h);
+    f.pts_ns = 1234;
+    CHECK(enc->encode(f, false, {}, pkt, &err));
+    CHECK(dec->decode(pkt.data, out, &err));
+    CHECK(enc->can_repeat());
+    // A predicted repeat: the same picture, from the encoder's copy.
+    CHECK(enc->encode_repeat(false, pkt, &err));
+    CHECK(!pkt.keyframe);
+    CHECK_EQ(pkt.pts_ns, int64_t(1234));
+    CHECK(pkt.data.size() < 16);
+    CHECK(dec->decode(pkt.data, out, &err));
+    CHECK(out.data == src);
+    // A keyframe repeat decodes alone; request_keyframe() applies to repeats.
+    CHECK(enc->encode_repeat(true, pkt, &err));
+    CHECK(pkt.keyframe);
+    CHECK(is_keyframe(Codec::Raw, pkt.data));
+    auto fresh = raw_decoder(&err);
+    CHECK(fresh->decode(pkt.data, out, &err));
+    CHECK(out.data == src);
+    enc->request_keyframe();
+    CHECK(enc->encode_repeat(false, pkt, &err));
+    CHECK(pkt.keyframe);
+    CHECK(enc->encode_repeat(false, pkt, &err));
+    CHECK(!pkt.keyframe);
+    // The next real frame predicts from the repeated picture.
+    const auto next = pattern(w, h, 8);
+    CHECK(enc->encode(cpu_frame(next, w, h), false, {}, pkt, &err));
+    CHECK(!pkt.keyframe);
+    CHECK(fresh->decode(pkt.data, out, &err));
+    CHECK(out.data == next);
+    // reconfigure() and a failure drop the picture.
+    EncoderConfig cfg = enc->config();
+    cfg.bitrate_kbps = 2000;
+    CHECK(enc->reconfigure(cfg, &err));
+    CHECK(!enc->can_repeat());
+    CHECK(enc->encode(cpu_frame(next, w, h), false, {}, pkt, &err));
+    CHECK(enc->can_repeat());
+    std::vector<uint8_t> wrong(size_t(w + 1) * h * 4);
+    CHECK(!enc->encode(cpu_frame(wrong, w + 1, h), false, {}, pkt, &err));
+    CHECK(!enc->can_repeat());
+    err.clear();
+    CHECK(!enc->encode_repeat(false, pkt, &err));
+    CHECK(err.empty());
+}
+
 void test_factory() {
     check::phase("factory and probe");
     std::string err;
@@ -287,6 +350,7 @@ int main() {
     check::watchdog(120);
     test_raw_codec();
     test_encoder_contract();
+    test_encode_repeat();
     test_factory();
     test_bitstream();
     return check::finish();

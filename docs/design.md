@@ -67,6 +67,8 @@ struct EncoderConfig { Codec codec; uint32_t width, height, fps = 60, bitrate_kb
 class Encoder {
     bool encode(const Frame&, bool force_keyframe, const std::function<void()>& release,
                 Packet& out, std::string* err);
+    bool encode_repeat(bool force_keyframe, Packet& out, std::string* err);  // the last picture again
+    bool can_repeat() const noexcept;
     void request_keyframe() noexcept;           // any thread; the next encode is a keyframe
     bool reconfigure(const EncoderConfig&, std::string* err);  // bitrate / fps / size, not codec
     const EncoderConfig& config() const;
@@ -105,6 +107,18 @@ The headers are the reference; what they promise:
 - **Reconfigure.** Bitrate, frame rate and size change from the next frame
   on, which is a keyframe; the codec cannot change. False leaves the encoder
   as it was, and the caller makes a new one.
+- **Repeats.** `encode_repeat()` codes the last frame's picture again from
+  the encoder's own copy (VA-API: its NV12 input surface; Raw: its last
+  picture), with that frame's pts and `encode()`'s keyframe rules; no frame
+  is held for it. A predicted repeat codes what the picture before it got
+  wrong, so a soft picture sharpens: for a source that sends frames only on
+  change, whose first frame after a big change would otherwise stay as
+  soft as the HRD buffer left it (test_vaapi measures 18 dB rising to 50
+  over about 25 HEVC repeats at 20 Mbit/s). A keyframe repeat gives a
+  joining decoder the picture without a new frame. `can_repeat()` is false
+  before the first frame, after a failure or `reconfigure()`, and on a
+  backend that keeps no picture (Media Foundation has no encoder); then
+  `encode_repeat()` returns false with `*err` untouched.
 - **Lost sync.** `decode()` returns false when a packet is bad or the decoder
   lost sync (a predicted frame with no keyframe before it, or after an
   earlier failure); it then takes nothing but a keyframe. `out.ready` is
@@ -176,7 +190,8 @@ caller may free.
   is one packet that must cross the link before it shows, and with half a
   second of buffer desktop-like content made packets of up to 450 kB, 4-5 ms
   over ssh, against about 110 kB and 1.5 ms now, mean latency unchanged; the
-  first frame after a big change is softer and sharpens over the next few)
+  first frame after a big change is softer and sharpens over the next few,
+  which a still screen must get from `encode_repeat()`: see Repeats)
   and no filler (`disable_bit_stuffing`): padding a quiet picture up to the
   bitrate is wasted bandwidth, and on VCN 4 (encoder firmware ENC 1.24) an
   AV1 frame needing more than about 35 KB of padding OBU hangs the encode

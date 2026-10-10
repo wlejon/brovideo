@@ -163,12 +163,7 @@ protected:
             for (size_t i = 0; i < cur_.size(); ++i) delta_[i] = uint8_t(cur_[i] ^ prev_[i]);
             src = delta_.data();
         }
-        out.data.reserve(64 + cur_.size() / 8);
-        out.data.push_back(intra ? kIntra : kDelta);
-        put_varint(out.data, w);
-        put_varint(out.data, h);
-        rle(src, w * h, out.data);
-        out.keyframe = intra;
+        pack(intra, src, out);
         prev_.swap(cur_);
         return true;
     }
@@ -178,7 +173,27 @@ protected:
         return true;
     }
 
+    // Lossless: a predicted repeat is an all-zero delta; the use is a
+    // keyframe of the last picture.
+    bool repeats() const override { return true; }
+    bool encode_repeat_frame(bool keyframe, Packet& out, std::string*) override {
+        if (prev_.size() != size_t(config_.width) * config_.height * 4) return false;
+        if (!keyframe) delta_.assign(prev_.size(), 0);
+        pack(keyframe, keyframe ? prev_.data() : delta_.data(), out);
+        return true;
+    }
+
 private:
+    void pack(bool intra, const uint8_t* src, Packet& out) const {
+        const size_t w = config_.width, h = config_.height;
+        out.data.reserve(64 + w * h * 4 / 8);
+        out.data.push_back(intra ? kIntra : kDelta);
+        put_varint(out.data, w);
+        put_varint(out.data, h);
+        rle(src, w * h, out.data);
+        out.keyframe = intra;
+    }
+
     std::vector<uint8_t> cur_, prev_, delta_;
 };
 

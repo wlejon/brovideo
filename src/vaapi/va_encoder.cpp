@@ -97,6 +97,14 @@ protected:
         return encode_picture(keyframe, out, err);
     }
 
+    // The input surface keeps the last converted picture until the next
+    // frame's conversion overwrites it.
+    bool repeats() const override { return true; }
+    bool encode_repeat_frame(bool keyframe, Packet& out, std::string* err) override {
+        if (!display_) return false;
+        return encode_picture(keyframe, out, err);
+    }
+
     bool apply_config(const EncoderConfig& next, std::string*) override {
         if (!display_) return true;  // nothing open yet: the first frame opens with `next`
         if (next.width != config_.width || next.height != config_.height || next.fps != config_.fps) {

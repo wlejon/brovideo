@@ -203,10 +203,33 @@ bool Encoder::encode(const Frame& frame, bool force_keyframe, const std::functio
     if (!ok) {
         out.data.clear();
         need_keyframe_ = true;  // the reference state is unknown now
+        has_picture_ = false;
         return false;
     }
     out.keyframe = out.keyframe || keyframe;  // a backend may make one on its own
     out.pts_ns = frame.pts_ns;
+    need_keyframe_ = false;
+    has_picture_ = true;
+    last_pts_ns_ = frame.pts_ns;
+    return true;
+}
+
+bool Encoder::encode_repeat(bool force_keyframe, Packet& out, std::string* err) {
+    out.data.clear();
+    out.keyframe = false;
+    out.pts_ns = last_pts_ns_;
+    if (!can_repeat()) return false;
+    const bool requested = keyframe_requested_.exchange(false, std::memory_order_relaxed);
+    const bool keyframe = force_keyframe || requested || need_keyframe_;
+    if (!encode_repeat_frame(keyframe, out, err)) {
+        out.data.clear();
+        need_keyframe_ = true;
+        has_picture_ = false;
+        if (err && err->empty()) *err = "the repeat encode failed";
+        return false;
+    }
+    out.keyframe = out.keyframe || keyframe;
+    out.pts_ns = last_pts_ns_;
     need_keyframe_ = false;
     return true;
 }
@@ -223,6 +246,7 @@ bool Encoder::reconfigure(const EncoderConfig& config, std::string* err) {
     if (!apply_config(config, err)) return false;
     config_ = config;
     need_keyframe_ = true;
+    has_picture_ = false;  // the kept picture is the old size (or gone with the session)
     return true;
 }
 
