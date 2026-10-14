@@ -102,18 +102,19 @@ else()
     set(BROVIDEO_WITH_VAAPI OFF)
 endif()
 
-# ---- Media Foundation decoder (Windows) --------------------------------------------
-# Everything it needs is in the Windows SDK; which codecs actually decode is
-# probed at run time (src/mf/mf_probe.cpp).
+# ---- Media Foundation (Windows) ----------------------------------------------------
+# Everything it needs is in the Windows SDK; which codecs actually encode and
+# decode is probed at run time (src/mf/mf_probe.cpp).
 if(WIN32)
-    option(BROVIDEO_WITH_MF "Build the Media Foundation decoder" ON)
+    option(BROVIDEO_WITH_MF "Build the Media Foundation backend" ON)
 else()
     set(BROVIDEO_WITH_MF OFF)
 endif()
 if(BROVIDEO_WITH_MF)
-    message(STATUS "brovideo: Media Foundation decoder enabled")
+    message(STATUS "brovideo: Media Foundation backend enabled")
     target_sources(brovideo PRIVATE
         src/mf/mf_util.cpp
+        src/mf/mf_encoder.cpp
         src/mf/mf_decoder.cpp
         src/mf/mf_probe.cpp
     )

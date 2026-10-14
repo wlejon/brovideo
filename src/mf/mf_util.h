@@ -12,6 +12,7 @@
 #include <wrl/client.h>
 
 #include <string>
+#include <vector>
 
 namespace brovideo::mf {
 
@@ -34,7 +35,15 @@ bool subtype_for(Codec c, GUID& out);
 // none registered.
 ComPtr<IMFTransform> create_decoder_mft(Codec codec, std::string* err);
 
-// A D3D11 device for hardware decoding (video support, multithread
+// Hardware encoder MFTs for `codec` with NV12 input, filtered to match the
+// D3D11 adapter's PCI vendor ID (`vendor_id`, e.g. 0x10DE) when present so a
+// stale MFT from another GPU vendor is never given this adapter's device.
+std::vector<ComPtr<IMFActivate>> enum_encoder_mfts(Codec codec, UINT32 vendor_id, std::string* err);
+
+// The MFT's friendly name (MFT_FRIENDLY_NAME_Attribute), or empty.
+std::string activate_name(IMFActivate* act);
+
+// A D3D11 device for hardware encoding/decoding (video support, multithread
 // protected) and the DXGI device manager that hands it to an MFT. False with
 // *err when there is no usable hardware device.
 bool create_d3d11(ComPtr<ID3D11Device>& device, ComPtr<IMFDXGIDeviceManager>& manager, std::string* err);
@@ -42,5 +51,8 @@ bool create_d3d11(ComPtr<ID3D11Device>& device, ComPtr<IMFDXGIDeviceManager>& ma
 // The DXGI adapter's description behind `device` ("NVIDIA GeForce RTX
 // 4090"); empty when it cannot be read.
 std::string adapter_name(ID3D11Device* device);
+
+// The DXGI adapter's PCI VendorId (e.g. 0x10DE, 0x1002, 0x8086), or 0.
+UINT32 adapter_vendor_id(ID3D11Device* device);
 
 }  // namespace brovideo::mf

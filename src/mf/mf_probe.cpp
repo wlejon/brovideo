@@ -5,7 +5,9 @@
 // really works. An installed MFT that cannot actually decode (a missing
 // extension's stub, a GPU without the codec) is not listed.
 #include "backend.h"
+#include "brovideo/bitstream.h"
 #include "mf_decoder.h"
+#include "mf_encoder.h"
 
 namespace brovideo::detail {
 
@@ -48,6 +50,33 @@ std::span<const uint8_t> probe_stream(Codec c) {
     }
 }
 
+// Encodes a 256x256 grey frame; true when it produces a valid keyframe packet.
+bool probe_encodes(Codec c, std::string* adapter, std::string& why) {
+    EncoderConfig ec;
+    ec.codec = c;
+    ec.width = 256;
+    ec.height = 256;
+    ec.fps = 60;
+    ec.bitrate_kbps = 4000;
+    ec.allow_software = false;
+    auto e = mf::MfEncoder::create(ec, &why);
+    if (!e) return false;
+    std::vector<uint8_t> nv12(256 * 256 * 3 / 2, 0x80);
+    Frame f;
+    f.width = 256;
+    f.height = 256;
+    f.cpu = nv12.data();
+    f.cpu_format = PixelFormat::NV12;
+    Packet pkt;
+    if (!e->encode(f, true, {}, pkt, &why)) return false;
+    if (pkt.data.empty() || !is_keyframe(c, pkt.data)) {
+        why = "the encoder MFT did not produce a valid keyframe";
+        return false;
+    }
+    if (adapter) *adapter = e->adapter();
+    return true;
+}
+
 // Decodes the probe keyframe; true when it comes out 192x192 and grey
 // (0x80 is luma 126 in limited range).
 bool probe_decodes(Codec c, bool hardware, bool* got_hardware, std::string* adapter, std::string& why) {
@@ -75,38 +104,47 @@ bool probe_decodes(Codec c, bool hardware, bool* got_hardware, std::string* adap
     return true;
 }
 
-Capability decode_capability(Codec c, bool hardware, const std::string& device) {
+Capability make_capability(Codec c, Direction dir, bool hardware, const std::string& device) {
     Capability cap;
     cap.codec = c;
-    cap.direction = Direction::Decode;
+    cap.direction = dir;
     cap.backend = Backend::MediaFoundation;
     cap.hardware = hardware;
     cap.device = device;
     return cap;
 }
 
-// Hardware where a D3D11 decode of the probe picture came out right, and
-// software where a software one did: about 0.7 s for all three codecs.
 ProbeResult probe() {
     ProbeResult r;
     std::string err;
     if (!mf::ensure_started(&err)) {
-        for (Codec c : {Codec::H264, Codec::HEVC, Codec::AV1}) r.missing.push_back({c, Direction::Decode, err});
+        for (Codec c : {Codec::H264, Codec::HEVC, Codec::AV1}) {
+            r.missing.push_back({c, Direction::Encode, err});
+            r.missing.push_back({c, Direction::Decode, err});
+        }
         return r;
     }
     for (Codec c : {Codec::H264, Codec::HEVC, Codec::AV1}) {
+        std::string enc_adapter, why_enc;
+        if (probe_encodes(c, &enc_adapter, why_enc)) {
+            r.caps.push_back(make_capability(c, Direction::Encode, true,
+                                             enc_adapter.empty() ? "D3D11" : enc_adapter + " (D3D11)"));
+        } else {
+            r.missing.push_back({c, Direction::Encode, "Media Foundation: " + why_enc});
+        }
+
         bool hw = false;
         std::string adapter, why_hw, why_sw;
         const bool hw_ok = probe_decodes(c, true, &hw, &adapter, why_hw);
         if (hw_ok && hw) {
-            r.caps.push_back(decode_capability(c, true, adapter.empty() ? "D3D11" : adapter + " (D3D11)"));
+            r.caps.push_back(make_capability(c, Direction::Decode, true, adapter.empty() ? "D3D11" : adapter + " (D3D11)"));
         }
         if (hw_ok && !hw) {
             // The MFT would not take the device and decoded in software:
             // that was the software probe.
-            r.caps.push_back(decode_capability(c, false, "CPU"));
+            r.caps.push_back(make_capability(c, Direction::Decode, false, "CPU"));
         } else if (probe_decodes(c, false, nullptr, nullptr, why_sw)) {
-            r.caps.push_back(decode_capability(c, false, "CPU"));
+            r.caps.push_back(make_capability(c, Direction::Decode, false, "CPU"));
         } else if (!hw_ok) {
             const std::string why =
                 why_sw.empty() || why_sw == why_hw ? why_hw : why_hw + "; in software: " + why_sw;
@@ -116,7 +154,11 @@ ProbeResult probe() {
     return r;
 }
 
-std::unique_ptr<Decoder> create(const DecoderConfig& config, const Capability& cap, std::string* err) {
+std::unique_ptr<Encoder> create_encoder(const EncoderConfig& config, const Capability&, std::string* err) {
+    return mf::MfEncoder::create(config, err);
+}
+
+std::unique_ptr<Decoder> create_decoder(const DecoderConfig& config, const Capability& cap, std::string* err) {
     auto d = mf::MfDecoder::create(config.codec, cap.hardware, config.output, err);
     // An MFT that refuses the D3D11 device falls back to software, which
     // Require does not accept.
@@ -130,7 +172,7 @@ std::unique_ptr<Decoder> create(const DecoderConfig& config, const Capability& c
 }  // namespace
 
 const BackendOps& mf_backend() {
-    static const BackendOps ops{Backend::MediaFoundation, probe, nullptr, create};
+    static const BackendOps ops{Backend::MediaFoundation, probe, create_encoder, create_decoder};
     return ops;
 }
 

@@ -31,10 +31,12 @@ if(BROVIDEO_WITH_VAAPI)
     set_tests_properties(test_vaapi_decode PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
-# The Media Foundation decoder: fixtures made with ffmpeg when it is on PATH,
-# and the VA-API encoder's recorded output in tests/fixtures.
+# The Media Foundation backend: decoder and hardware encoder tests.
 if(BROVIDEO_WITH_MF)
     brovideo_test(test_mf test_pattern.cpp TIMEOUT 600)
     target_compile_definitions(test_mf PRIVATE BROVIDEO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
     target_link_libraries(test_mf PRIVATE d3d11)
+
+    brovideo_test(test_mf_encode test_pattern.cpp TIMEOUT 600)
+    set_tests_properties(test_mf_encode PROPERTIES SKIP_RETURN_CODE 77)
 endif()

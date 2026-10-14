@@ -104,6 +104,79 @@ ComPtr<IMFTransform> create_decoder_mft(Codec codec, std::string* err) {
     return mft;
 }
 
+std::string activate_name(IMFActivate* act) {
+    if (!act) return {};
+    wchar_t name[256]{};
+    UINT32 len = 0;
+    if (FAILED(act->GetString(MFT_FRIENDLY_NAME_Attribute, name, UINT32(std::size(name)), &len)) || len == 0) {
+        return {};
+    }
+    const int n = WideCharToMultiByte(CP_UTF8, 0, name, int(len), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out(size_t(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, name, int(len), out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+std::vector<ComPtr<IMFActivate>> enum_encoder_mfts(Codec codec, UINT32 vendor_id, std::string* err) {
+    GUID subtype{};
+    if (!subtype_for(codec, subtype)) {
+        if (err) *err = std::string("no Media Foundation encoder for ") + codec_name(codec);
+        return {};
+    }
+    MFT_REGISTER_TYPE_INFO in{MFMediaType_Video, MFVideoFormat_NV12};
+    MFT_REGISTER_TYPE_INFO out{MFMediaType_Video, subtype};
+    IMFActivate** acts = nullptr;
+    UINT32 count = 0;
+    const UINT32 flags =
+        MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER;
+    HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, flags, &in, &out, &acts, &count);
+    if (SUCCEEDED(hr) && count == 0) {
+        if (acts) CoTaskMemFree(acts);
+        acts = nullptr;
+        hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, flags, nullptr, &out, &acts, &count);
+    }
+    if (FAILED(hr) || count == 0) {
+        if (err) {
+            *err = FAILED(hr) ? hr_text("MFTEnumEx (encoder)", hr)
+                              : std::string("no hardware ") + codec_name(codec) + " encoder MFT is registered";
+        }
+        if (acts) CoTaskMemFree(acts);
+        return {};
+    }
+
+    wchar_t expected_ven[32]{};
+    if (vendor_id != 0) std::swprintf(expected_ven, std::size(expected_ven), L"VEN_%04X", vendor_id);
+
+    std::vector<ComPtr<IMFActivate>> matched, generic;
+    for (UINT32 i = 0; i < count; ++i) {
+        IMFActivate* a = acts[i];
+        const UINT32 mft_flags = MFGetAttributeUINT32(a, MF_TRANSFORM_FLAGS_Attribute, 0);
+        wchar_t hw_url[256]{};
+        wchar_t ven[64]{};
+        a->GetString(MFT_ENUM_HARDWARE_URL_Attribute, hw_url, UINT32(std::size(hw_url)), nullptr);
+        a->GetString(MFT_ENUM_HARDWARE_VENDOR_ID_Attribute, ven, UINT32(std::size(ven)), nullptr);
+        const bool is_hw = (mft_flags & MFT_ENUM_FLAG_HARDWARE) != 0 || hw_url[0] != L'\0' || ven[0] != L'\0';
+        if (is_hw) {
+            if (ven[0] != L'\0' && expected_ven[0] != L'\0') {
+                if (_wcsicmp(ven, expected_ven) == 0) {
+                    matched.emplace_back(a);
+                }
+            } else {
+                generic.emplace_back(a);
+            }
+        }
+        a->Release();
+    }
+    CoTaskMemFree(acts);
+
+    matched.insert(matched.end(), generic.begin(), generic.end());
+    if (matched.empty() && err) {
+        *err = std::string("no hardware ") + codec_name(codec) + " encoder MFT matches the GPU adapter";
+    }
+    return matched;
+}
+
 bool create_d3d11(ComPtr<ID3D11Device>& device, ComPtr<IMFDXGIDeviceManager>& manager, std::string* err) {
     static const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
                                                D3D_FEATURE_LEVEL_10_0};
@@ -145,6 +218,18 @@ std::string adapter_name(ID3D11Device* device) {
     std::string out(size_t(len - 1), '\0');
     WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, out.data(), len, nullptr, nullptr);
     return out;
+}
+
+UINT32 adapter_vendor_id(ID3D11Device* device) {
+    if (!device) return 0;
+    ComPtr<IDXGIDevice> dxgi;
+    ComPtr<IDXGIAdapter> adapter;
+    DXGI_ADAPTER_DESC desc{};
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgi))) || FAILED(dxgi->GetAdapter(&adapter)) ||
+        FAILED(adapter->GetDesc(&desc))) {
+        return 0;
+    }
+    return desc.VendorId;
 }
 
 }  // namespace brovideo::mf

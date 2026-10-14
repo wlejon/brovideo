@@ -24,6 +24,7 @@ codec's packet format.
 | Raw codec (CPU RGBA, run-length + XOR-delta), everywhere | done |
 | VA-API encoder (Linux): H.264, HEVC, AV1; dmabuf or CPU input | done, tested on radeonsi (VCN 4) |
 | VA-API decoder (Linux): H.264, HEVC, AV1; CPU NV12 or DRM PRIME dmabuf output | done, tested on radeonsi (VCN 4) |
+| Media Foundation encoder (Windows): H.264, HEVC, AV1; hardware MFT (D3D11) | done, tested on an RTX 4090 |
 | Media Foundation decoder (Windows): H.264, HEVC, AV1; D3D11 or software | done, tested on an RTX 4090 |
 | Vulkan Video, VideoToolbox | not yet (the backend slot is there) |
 
