@@ -35,7 +35,9 @@ struct NodeCaps {
     std::string path;    // /dev/dri/renderD128
     std::string driver;  // the kernel driver behind it ("amdgpu"), empty if unknown
     std::vector<CodecCaps> codecs;
+    std::vector<CodecCaps> decoders;
     [[nodiscard]] const CodecCaps* find(Codec c) const;
+    [[nodiscard]] const CodecCaps* find_decoder(Codec c) const;
 };
 
 // Every render node that has a VA driver with a VideoProc entrypoint and at

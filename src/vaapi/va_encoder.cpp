@@ -7,6 +7,7 @@
 // copy, release the frame, then encode and read the coded buffer.
 #include "backend.h"
 #include "vaapi/va_codec.h"
+#include "vaapi/va_decoder.h"
 #include "vaapi/va_source.h"
 #include "vaapi/va_vpp.h"
 
@@ -347,6 +348,28 @@ detail::ProbeResult probe() {
                                                : std::string("VA-API: no render node's driver encodes ") +
                                                      codec_name(c)});
         }
+
+        bool any_dec = false;
+        for (const NodeCaps& n : nodes) {
+            const CodecCaps* dc = n.find_decoder(c);
+            if (!dc) continue;
+            any_dec = true;
+            Capability cap;
+            cap.codec = c;
+            cap.direction = Direction::Decode;
+            cap.backend = Backend::VaApi;
+            cap.hardware = true;
+            cap.max_width = dc->max_width;
+            cap.max_height = dc->max_height;
+            cap.device = n.path + (n.driver.empty() ? "" : " (" + n.driver + ")");
+            r.caps.push_back(std::move(cap));
+        }
+        if (!any_dec) {
+            r.missing.push_back({c, Direction::Decode,
+                                 nodes.empty() ? "VA-API: no render node with a VA driver ($BROVIDEO_VAAPI_DEBUG=1 says why)"
+                                               : std::string("VA-API: no render node's driver decodes ") +
+                                                     codec_name(c)});
+        }
     }
     return r;
 }
@@ -363,7 +386,7 @@ std::unique_ptr<Encoder> create(const EncoderConfig& config, const Capability&, 
 namespace brovideo::detail {
 
 const BackendOps& vaapi_backend() {
-    static const BackendOps ops{Backend::VaApi, vaapi::probe, vaapi::create, nullptr};
+    static const BackendOps ops{Backend::VaApi, vaapi::probe, vaapi::create, vaapi::create_va_decoder};
     return ops;
 }
 

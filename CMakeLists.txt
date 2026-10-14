@@ -88,6 +88,10 @@ if(UNIX AND NOT APPLE)
             src/vaapi/va_h264.cpp
             src/vaapi/va_hevc.cpp
             src/vaapi/va_av1.cpp
+            src/vaapi/va_decoder.cpp
+            src/vaapi/va_dec_h264.cpp
+            src/vaapi/va_dec_hevc.cpp
+            src/vaapi/va_dec_av1.cpp
         )
         target_compile_definitions(brovideo PRIVATE BROVIDEO_HAVE_VAAPI)
         target_link_libraries(brovideo PRIVATE PkgConfig::BROVIDEO_VA brodmabuf::brodmabuf)

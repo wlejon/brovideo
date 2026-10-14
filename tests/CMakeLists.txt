@@ -24,6 +24,11 @@ if(BROVIDEO_WITH_VAAPI)
     brovideo_test(test_vaapi test_pattern.cpp TIMEOUT 900)
     target_link_libraries(test_vaapi PRIVATE brodmabuf::brodmabuf)
     set_tests_properties(test_vaapi PROPERTIES SKIP_RETURN_CODE 77)
+
+    brovideo_test(test_vaapi_decode test_pattern.cpp TIMEOUT 600)
+    target_compile_definitions(test_vaapi_decode PRIVATE BROVIDEO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+    target_link_libraries(test_vaapi_decode PRIVATE PkgConfig::BROVIDEO_VA)
+    set_tests_properties(test_vaapi_decode PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # The Media Foundation decoder: fixtures made with ffmpeg when it is on PATH,

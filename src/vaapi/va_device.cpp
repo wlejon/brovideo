@@ -81,13 +81,14 @@ bool has_entrypoint(VADisplay dpy, VAProfile profile, VAEntrypoint ep) {
     return std::find(eps.begin(), eps.begin() + n, ep) != eps.begin() + n;
 }
 
-// The surface alignment the encoder needs (VASurfaceAttribAlignmentSize,
+// The surface alignment the codec needs (VASurfaceAttribAlignmentSize,
 // libva 2.17+), queried on a throwaway config; 16x16 when not reported.
 void surface_alignment(VADisplay dpy, VAProfile p, VAEntrypoint ep, CodecCaps& out) {
     out.align_width = out.align_height = 16;
     VAConfigAttrib a[2] = {{VAConfigAttribRTFormat, VA_RT_FORMAT_YUV420}, {VAConfigAttribRateControl, VA_RC_CBR}};
+    const int n_attrs = (ep == VAEntrypointVLD) ? 1 : 2;
     VAConfigID cfg = VA_INVALID_ID;
-    if (vaCreateConfig(dpy, p, ep, a, 2, &cfg) != VA_STATUS_SUCCESS) return;
+    if (vaCreateConfig(dpy, p, ep, a, n_attrs, &cfg) != VA_STATUS_SUCCESS) return;
     unsigned n = 0;
     vaQuerySurfaceAttributes(dpy, cfg, nullptr, &n);
     std::vector<VASurfaceAttrib> attrs(n);
@@ -150,6 +151,33 @@ bool probe_codec(VADisplay dpy, const std::vector<VAProfile>& profiles, Codec co
     return false;
 }
 
+bool probe_decoder(VADisplay dpy, const std::vector<VAProfile>& profiles, Codec codec, CodecCaps& out) {
+    const int max = vaMaxNumProfiles(dpy);
+    if (max <= 0) return false;
+    std::vector<VAProfile> have(static_cast<size_t>(max));
+    int n = 0;
+    if (vaQueryConfigProfiles(dpy, have.data(), &n) != VA_STATUS_SUCCESS) return false;
+    have.resize(size_t(n));
+    for (VAProfile p : profiles) {
+        if (std::find(have.begin(), have.end(), p) == have.end()) continue;
+        if (!has_entrypoint(dpy, p, VAEntrypointVLD)) continue;
+        VAConfigAttrib a[3] = {{VAConfigAttribRTFormat, 0},
+                               {VAConfigAttribMaxPictureWidth, 0},
+                               {VAConfigAttribMaxPictureHeight, 0}};
+        if (vaGetConfigAttributes(dpy, p, VAEntrypointVLD, a, 3) != VA_STATUS_SUCCESS) continue;
+        if (a[0].value == VA_ATTRIB_NOT_SUPPORTED || !(a[0].value & VA_RT_FORMAT_YUV420)) continue;
+        out = CodecCaps{};
+        out.codec = codec;
+        out.profile = p;
+        out.entrypoint = VAEntrypointVLD;
+        out.max_width = a[1].value == VA_ATTRIB_NOT_SUPPORTED ? 0 : a[1].value;
+        out.max_height = a[2].value == VA_ATTRIB_NOT_SUPPORTED ? 0 : a[2].value;
+        surface_alignment(dpy, p, VAEntrypointVLD, out);
+        return true;
+    }
+    return false;
+}
+
 std::vector<NodeCaps> run_probe() {
     std::vector<NodeCaps> nodes;
     for (const std::string& path : render_node_paths()) {
@@ -160,20 +188,18 @@ std::vector<NodeCaps> run_probe() {
             continue;
         }
         VADisplay dpy = display->get();
-        if (!has_entrypoint(dpy, VAProfileNone, VAEntrypointVideoProc)) {
-            debug_log("%s: no VideoProc entrypoint", path.c_str());
-            continue;
-        }
+        const bool have_vpp = has_entrypoint(dpy, VAProfileNone, VAEntrypointVideoProc);
         NodeCaps node;
         node.path = path;
         node.driver = node_driver(path);
         CodecCaps caps;
         for (Codec c : supported_codecs()) {
-            if (probe_codec(dpy, codec_profiles(c), c, caps)) node.codecs.push_back(caps);
+            if (have_vpp && probe_codec(dpy, codec_profiles(c), c, caps)) node.codecs.push_back(caps);
+            if (probe_decoder(dpy, codec_profiles(c), c, caps)) node.decoders.push_back(caps);
         }
-        debug_log("%s (%s, %s): %zu encoders", path.c_str(), node.driver.c_str(), display->vendor().c_str(),
-                  node.codecs.size());
-        if (!node.codecs.empty()) nodes.push_back(std::move(node));
+        debug_log("%s (%s, %s): %zu encoders, %zu decoders", path.c_str(), node.driver.c_str(),
+                  display->vendor().c_str(), node.codecs.size(), node.decoders.size());
+        if (!node.codecs.empty() || !node.decoders.empty()) nodes.push_back(std::move(node));
     }
     return nodes;
 }
@@ -182,6 +208,13 @@ std::vector<NodeCaps> run_probe() {
 
 const CodecCaps* NodeCaps::find(Codec c) const {
     for (const CodecCaps& cc : codecs) {
+        if (cc.codec == c) return &cc;
+    }
+    return nullptr;
+}
+
+const CodecCaps* NodeCaps::find_decoder(Codec c) const {
+    for (const CodecCaps& cc : decoders) {
         if (cc.codec == c) return &cc;
     }
     return nullptr;

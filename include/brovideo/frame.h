@@ -61,12 +61,14 @@ struct Packet {
 
 // Where a decoded picture lives.
 enum class PictureMemory : uint8_t {
-    Cpu = 0,    // `data`, laid out as `format` says
-    D3D11 = 1,  // `gpu`: a slice of an NV12 ID3D11Texture2D (Media Foundation, DXVA)
+    Cpu = 0,     // `data`, laid out as `format` says
+    D3D11 = 1,   // `gpu`: a slice of an NV12 ID3D11Texture2D (Media Foundation, DXVA)
+    Dmabuf = 2,  // `gpu`: an NV12 DRM PRIME dmabuf exported from a VA surface (VA-API)
 };
 
 // A picture on the GPU. The handles are borrowed: `keepalive` holds the
-// decoder's output sample, so the texture stays valid for as long as the
+// decoder's output sample (D3D11) or the VA surface and exported fds
+// (Dmabuf), so the texture / dmabuf stays valid for as long as the
 // Picture (or a copy of `keepalive`) lives. Hold one only briefly: the
 // decoder works from a small pool of these surfaces and stalls when they
 // are all held.
@@ -74,8 +76,15 @@ struct GpuPicture {
     void* device = nullptr;    // D3D11: ID3D11Device*
     void* texture = nullptr;   // D3D11: ID3D11Texture2D* (NV12, possibly an array)
     uint32_t subresource = 0;  // D3D11: the slice / subresource index holding this picture
-    uint32_t x = 0;            // the visible picture's origin in the texture
+    uint32_t x = 0;            // the visible picture's origin in the texture / surface
     uint32_t y = 0;
+    // Dmabuf (VA-API): the exported DRM PRIME 2 NV12 surface.
+    uint32_t drm_format = 0;    // DRM fourcc, e.g. DRM_FORMAT_NV12
+    uint64_t modifier = 0;      // DRM format modifier
+    uint32_t coded_width = 0;   // surface width in pixels
+    uint32_t coded_height = 0;  // surface height in pixels
+    uint32_t plane_count = 0;
+    DmabufPlane planes[4]{};
     std::shared_ptr<void> keepalive;
 };
 
@@ -95,7 +104,7 @@ struct Picture {
     uint32_t stride = 0;
     uint32_t uv_offset = 0;  // NV12 only
     std::vector<uint8_t> data;
-    // D3D11: the texture (data stays empty).
+    // D3D11 / Dmabuf: the GPU surface (data stays empty).
     GpuPicture gpu;
     int64_t pts_ns = 0;  // the pts given with the packet this picture came from
 };

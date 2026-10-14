@@ -2,9 +2,9 @@
 
 Hardware video encode and decode as a dependency-free C++20 library: frames
 (a dmabuf with its acquire fence, or CPU RGBA/BGRA) in, H.264 / HEVC / AV1
-packets out; packets in, pictures (CPU NV12 or a D3D11 texture) out. Codecs
-are reached only through the platform's own APIs: VA-API on Linux, Media
-Foundation on Windows. No ffmpeg, no GPL.
+packets out; packets in, pictures (CPU NV12, exported DRM PRIME dmabuf, or a
+D3D11 texture) out. Codecs are reached only through the platform's own APIs:
+VA-API on Linux, Media Foundation on Windows. No ffmpeg, no GPL.
 
 In the [bro ecosystem](https://github.com/wlejon/bro/blob/main/docs/ecosystem.md)
 brovideo is the codec layer of broremote (remote desktop), and is meant for
@@ -23,8 +23,9 @@ codec's packet format.
 | API: codecs, capability probe, Encoder (keyframe request, reconfigure), Decoder (pts, CPU or GPU pictures) | done |
 | Raw codec (CPU RGBA, run-length + XOR-delta), everywhere | done |
 | VA-API encoder (Linux): H.264, HEVC, AV1; dmabuf or CPU input | done, tested on radeonsi (VCN 4) |
+| VA-API decoder (Linux): H.264, HEVC, AV1; CPU NV12 or DRM PRIME dmabuf output | done, tested on radeonsi (VCN 4) |
 | Media Foundation decoder (Windows): H.264, HEVC, AV1; D3D11 or software | done, tested on an RTX 4090 |
-| VA-API decode, Vulkan Video, VideoToolbox | not yet (the backend slot is there) |
+| Vulkan Video, VideoToolbox | not yet (the backend slot is there) |
 
 ```cpp
 #include <brovideo/brovideo.h>
