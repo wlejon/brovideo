@@ -43,6 +43,7 @@ endfunction()
 add_library(brovideo STATIC
     src/factory.cpp
     src/bitstream.cpp
+    src/damage.cpp
     src/raw/raw_codec.cpp
 )
 add_library(brovideo::brovideo ALIAS brovideo)

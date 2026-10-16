@@ -6,6 +6,7 @@
 // frame), convert it with VideoProc into the NV12 input surface, wait for that
 // copy, release the frame, then encode and read the coded buffer.
 #include "backend.h"
+#include "damage.h"
 #include "vaapi/va_codec.h"
 #include "vaapi/va_decoder.h"
 #include "vaapi/va_source.h"
@@ -92,10 +93,14 @@ protected:
             if (!imported.import(display_->get(), frame, err)) return false;
             src = imported.id();
         }
+        const detail::QualityBoost boost =
+            roi_regions_ ? detail::damage_boost(frame, keyframe, sp_.width, sp_.height, codec_alignment_roi(), roi_regions_,
+                                                budget_.scale())
+                         : detail::QualityBoost{};
         if (!vpp_.convert(src, frame.width, frame.height, input_, sp_.width, sp_.height, err)) return false;
         imported.reset();
         release();
-        return encode_picture(keyframe, out, err);
+        return encode_picture(keyframe, out, err, &boost);
     }
 
     // The input surface keeps the last converted picture until the next
@@ -119,6 +124,7 @@ protected:
             // are all a bitrate change needs.
             sp_.bitrate_bps = bitrate_bps(next);
             impl_ = make_impl(next.codec, sp_);
+            budget_.configure(next.bitrate_kbps, sp_.fps);
         }
         return true;
     }
@@ -127,6 +133,51 @@ private:
     static bool fail(std::string* err, const std::string& what) {
         if (err) *err = what;
         return false;
+    }
+
+    // The QP granularity of a region (radeonsi: a macroblock for H.264, the
+    // 64-pixel CTB otherwise). Regions are passed on this grid: radeonsi
+    // rounds a region's origin up to the next block, so an unaligned region
+    // misses the block it starts in.
+    uint32_t codec_alignment_roi() const { return config_.codec == Codec::H264 ? 16 : 64; }
+
+    // How many ROI regions with QP deltas the driver takes (0: none, no boost).
+    uint32_t query_roi_regions(VADisplay dpy, const CodecCaps& caps) const {
+        VAConfigAttrib a{};
+        a.type = VAConfigAttribEncROI;
+        if (vaGetConfigAttributes(dpy, caps.profile, caps.entrypoint, &a, 1) != VA_STATUS_SUCCESS ||
+            a.value == VA_ATTRIB_NOT_SUPPORTED) {
+            return 0;
+        }
+        VAConfigAttribValEncROI roi{};
+        roi.value = a.value;
+        return roi.bits.roi_rc_qp_delta_support ? roi.bits.num_roi_regions : 0;
+    }
+
+    // The damage boost as an ROI parameter: QP deltas for the regions, on
+    // top of what rate control picks for the frame.
+    bool add_roi(BufferList& bufs, const detail::QualityBoost& boost, std::string* err) {
+        roi_scratch_.clear();
+        // radeonsi takes AV1's deltas in qindex steps (0-255) and divides them
+        // by 5 into its QP scale; H.264 and HEVC deltas are QP steps.
+        const int scale = config_.codec == Codec::AV1 ? 5 : 1;
+        const int limit = config_.codec == Codec::AV1 ? 255 : 51;
+        for (const Rect& r : boost.regions) {
+            VAEncROI e{};
+            e.roi_rectangle.x = int16_t(r.x);
+            e.roi_rectangle.y = int16_t(r.y);
+            e.roi_rectangle.width = uint16_t(r.width);
+            e.roi_rectangle.height = uint16_t(r.height);
+            e.roi_value = int8_t(std::clamp(boost.qp_delta * scale, -128, 127));
+            roi_scratch_.push_back(e);
+        }
+        VAEncMiscParameterBufferROI roi{};
+        roi.num_roi = uint32_t(roi_scratch_.size());
+        roi.max_delta_qp = int8_t(std::min(limit, 127));
+        roi.min_delta_qp = int8_t(-std::min(limit, 128));
+        roi.roi = roi_scratch_.data();
+        roi.roi_flags.bits.roi_value_is_qp_delta = 1;
+        return bufs.add_misc(VAEncMiscParameterTypeROI, roi, err);
     }
 
     const NodeCaps* pick_node(const Frame& frame) const {
@@ -170,6 +221,8 @@ private:
         if (!display_) return false;
         driver_ = node->driver;
         VADisplay dpy = display_->get();
+        roi_regions_ = query_roi_regions(dpy, caps);
+        budget_.configure(config_.bitrate_kbps, sp_.fps);
         debug_log("%s encoder on %s (%s): %ux%u coded %ux%u, %u fps, %u bps", codec_name(codec), node->path.c_str(),
                   display_->vendor().c_str(), sp_.width, sp_.height, sp_.coded_width, sp_.coded_height, sp_.fps,
                   sp_.bitrate_bps);
@@ -261,7 +314,7 @@ private:
                bufs.add_misc(VAEncMiscParameterTypeFrameRate, fr, err);
     }
 
-    bool encode_picture(bool keyframe, Packet& out, std::string* err) {
+    bool encode_picture(bool keyframe, Packet& out, std::string* err, const detail::QualityBoost* boost = nullptr) {
         VADisplay dpy = display_->get();
         if (keyframe) index_in_gop_ = 0;
         PictureParams pic;
@@ -276,6 +329,9 @@ private:
         BufferList bufs(dpy, context_);
         bool ok = true;
         if (keyframe) ok = impl_->add_sequence(bufs, pic, err) && add_rate_control(bufs, err);
+        // The driver forgets the regions after each picture, so a frame
+        // without a boost (and every repeat) codes without them.
+        if (boost && boost->qp_delta != 0 && !keyframe) ok = ok && add_roi(bufs, *boost, err);
         ok = ok && impl_->add_picture(bufs, pic, err) && bufs.render(err);
         const VAStatus end = vaEndPicture(dpy, context_);
         if (ok) ok = va_check(end, "vaEndPicture (encode)", err);
@@ -298,6 +354,7 @@ private:
         impl_->finish_packet(out.data);
 
         out.keyframe = keyframe;
+        budget_.spent(out.data.size());
         if (keyframe) ++keyframe_count_;
         ++index_in_gop_;
         current_ ^= 1;
@@ -318,6 +375,9 @@ private:
     uint64_t index_in_gop_ = 0;
     uint64_t keyframe_count_ = 0;
     unsigned current_ = 0;
+    uint32_t roi_regions_ = 0;            // ROI regions with QP deltas the driver takes (0: no damage boost)
+    std::vector<VAEncROI> roi_scratch_;   // the ROI parameter's regions, read at vaRenderPicture
+    detail::BoostBudget budget_;
 };
 
 // ---- the backend's factory entry points ------------------------------------------

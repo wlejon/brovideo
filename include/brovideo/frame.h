@@ -17,6 +17,14 @@ enum class PixelFormat : uint8_t {
 
 // ---- encoder input ---------------------------------------------------------------
 
+// A rectangle of a picture, in pixels.
+struct Rect {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
 struct DmabufPlane {
     int fd = -1;
     uint32_t offset = 0;
@@ -41,6 +49,16 @@ struct Frame {
     uint32_t cpu_stride = 0;
     PixelFormat cpu_format = PixelFormat::RGBA8;  // RGBA8 or BGRA8
     int64_t pts_ns = 0;         // carried through to the packet unchanged
+    // What differs from the previous frame given to this encoder (its
+    // damage), in frame pixels, when the source knows: a compositor does.
+    // With damage_known false (the default) anything may have changed.
+    // Known and empty: the same picture again. An encoder that can uses it
+    // to spend more on a small damage, so a change to a small area (a line
+    // of text rewritten) lands sharp at once instead of as soft as rate
+    // control makes a big change; see docs/design.md, "Damage". A hint only:
+    // every pixel is encoded either way.
+    bool damage_known = false;
+    std::vector<Rect> damage;
 
     [[nodiscard]] bool is_cpu() const noexcept { return plane_count == 0; }
     [[nodiscard]] uint32_t cpu_row_bytes() const noexcept { return cpu_stride ? cpu_stride : width * 4; }

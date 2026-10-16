@@ -119,6 +119,40 @@ The headers are the reference; what they promise:
   before the first frame, after a failure or `reconfigure()`, and on a
   backend that keeps no picture (Media Foundation has no encoder); then
   `encode_repeat()` returns false with `*err` untouched.
+- **Damage.** A frame may say what changed since the previous one
+  (`damage_known`, `damage`: rects in frame pixels; known and empty is the
+  same picture again). It is a hint: every pixel is coded either way. CBR
+  with a short HRD buffer sizes each frame by the per-frame budget, so right
+  after a big change rate control has the QP near its coarsest, and a
+  source that sends frames only on change sends a small change that keeps
+  coming (a build's progress line rewritten at 20 Hz) as frames that each
+  land that soft, with no still moment for repeats to sharpen it: halo, 20
+  Mbit/s 1080p, a line rewritten right after a window opened lands at 20.7
+  dB (HEVC), 19.0 (H.264), 22.8 (AV1). The VA-API encoder codes the damaged
+  blocks finer than rate control chose, through the driver's ROI QP deltas
+  (`VAEncMiscParameterTypeROI`, used only when the driver reports
+  `roi_rc_qp_delta_support`): -30 QP steps for a damage of at most 2% of
+  the picture, tapering linearly to none at 40%, so a big change keeps its
+  small fast packet. The rects are aligned outward to the codec's QP block
+  (16 for H.264, 64 for HEVC and AV1; radeonsi rounds a region's origin
+  *up*, so an unaligned rect misses the line it is for) and merged down to
+  the driver's region count. A boost makes the frame bigger than rate
+  control would and rate control does not take all of it back, so the
+  encoder counts every packet against the bitrate and tapers the boost
+  while the stream is over, by up to half a second's worth (none past it):
+  small damage arriving every frame stays within the bitrate, a burst is
+  boosted in full. Keyframes and repeats get no boost. Measured with the
+  boost: that line lands at 48.1 dB (HEVC), 36.8 (H.264), 45.7 (AV1); 16
+  lines rewritten at 20 Hz land at 42.4 / 34.6 / 54.8 against 37.2 / 33.8
+  / 50.2; a window opening is the same packet as without. A per-frame
+  `max_qp` would do it too, but radeonsi applies a frame's QP range only
+  through its per-picture rate control, which only a `max_frame_size`
+  change triggers, and a cap on the whole frame makes a big change three to
+  four times bigger (680-940 kB against about 220). Media Foundation
+  ignores damage: NVENC's rate control already lands these lines at 54-60
+  dB, with a big change as one large packet (0.7-1.1 MB) instead.
+  `damage_boost()` and `BoostBudget` (src/damage.h) are the shared policy
+  for any backend that adds this.
 - **Lost sync.** `decode()` returns false when a packet is bad or the decoder
   lost sync (a predicted frame with no keyframe before it, or after an
   earlier failure); it then takes nothing but a keyframe. `out.ready` is
@@ -298,6 +332,20 @@ DXVA themselves once given a device.
   error per channel, which catches a wrong matrix, range, transfer or
   channel order. Also measures dmabuf-to-packet latency at 1920x1080 and
   2560x1440. `$BROVIDEO_TEST_CODEC` narrows it to one codec.
+- `test_text_quality` (Linux with VA-API, Windows with Media Foundation;
+  exit 77 without a hardware encoder; needs ffmpeg), per reported codec at
+  1920x1080, 20 Mbit/s: a text page with lines rewritten as broremote sends
+  them (frames on change, repeats between them until two packets come in
+  under a quarter of the budget), each scenario with and without damage: a
+  line at 60, 20 and 10 Hz; a window opening then a line at 20 Hz; 4, 16
+  and 48 lines at 20 Hz; 16 lines at 60 Hz; the window alone. It prints the
+  luma PSNR of the changing lines (as they land and after) and of the
+  static text, the bitrate and the largest packet, and checks that lines
+  land sharp (45 dB) where the encoder can, that damage is never more than
+  1 dB worse anywhere, that it leaves the window packet and the bitrate of
+  fast-changing damage alone, and on VA-API that a line after a window
+  lands at least 32 dB and 10 dB better with damage. The bench for the
+  Damage numbers above.
 - `test_mf` (Windows): with ffmpeg on PATH, the test pattern encoded by
   libx264 / libx265 / libaom (I and P only) at 640x360 then 718x404 in one
   stream, decoded per codec the machine reports: every picture's size, frame

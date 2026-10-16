@@ -24,6 +24,7 @@
 #include "dmabuf_frames.h"
 #include "ffmpeg_oracle.h"
 #include "test_pattern.h"
+#include "text_page.h"
 
 #include <dirent.h>
 
@@ -35,6 +36,7 @@
 
 using namespace brovideo;
 using testkit::draw_test_pattern;
+using testkit::text_page;
 
 namespace {
 
@@ -338,44 +340,6 @@ void test_reconfigure(Codec codec) {
     std::vector<uint64_t> source(tail.size());
     for (size_t i = 0; i < source.size(); ++i) source[i] = 2000 + i;
     verify_stream(codec, tail, source, w2, h2, std::string(codec_name(codec)) + "-resized");
-}
-
-// A desktop-like picture: a light page of dark text-like strokes (1-2 px,
-// the detail rate control starves first) on coloured panels. Each seed lays
-// it out differently, so one seed after another is a big change, a window
-// opening.
-std::vector<uint8_t> text_page(uint32_t w, uint32_t h, uint32_t seed) {
-    std::vector<uint8_t> px(size_t(w) * h * 4, 255);
-    uint32_t rng = seed * 2654435761u + 1;
-    const auto next = [&] { return (rng = rng * 1664525u + 1013904223u) >> 8; };
-    const auto rect = [&](uint32_t x0, uint32_t y0, uint32_t rw, uint32_t rh, uint8_t r, uint8_t g, uint8_t b) {
-        for (uint32_t y = y0; y < std::min(h, y0 + rh); ++y) {
-            for (uint32_t x = x0; x < std::min(w, x0 + rw); ++x) {
-                uint8_t* p = &px[(size_t(y) * w + x) * 4];
-                p[0] = r, p[1] = g, p[2] = b;
-            }
-        }
-    };
-    for (int i = 0; i < 6; ++i) {
-        rect(next() % w, next() % h, 200 + next() % 600, 100 + next() % 400, uint8_t(150 + next() % 100),
-             uint8_t(150 + next() % 100), uint8_t(150 + next() % 100));
-    }
-    // Lines of glyphs: 7x10 cells of random strokes, 4 px between lines.
-    for (uint32_t ly = 8 + seed % 7; ly + 10 < h; ly += 14) {
-        uint32_t x = 8 + next() % 40;
-        const uint32_t end = w - 8 - next() % 300;
-        while (x + 7 < end) {
-            const uint32_t glyph = next();
-            for (int s = 0; s < 4; ++s) {
-                const uint32_t bits = glyph >> (s * 5);
-                if (bits & 1) rect(x + (bits >> 1) % 6, ly, 1 + (bits >> 4 & 1), 10, 30, 30, 40);  // a stem
-                else rect(x, ly + (bits >> 1) % 9, 6, 1, 30, 30, 40);                            // a bar
-            }
-            x += 8;
-            if (next() % 7 == 0) x += 8;  // a space
-        }
-    }
-    return px;
 }
 
 // encode_repeat(): an encoder fed frames only when the picture changes (a

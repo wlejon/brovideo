@@ -31,6 +31,13 @@ if(BROVIDEO_WITH_VAAPI)
     set_tests_properties(test_vaapi_decode PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
+# Text on a live desktop through whichever hardware encoder the machine has
+# (VA-API or Media Foundation), driven as broremote drives it.
+if(BROVIDEO_WITH_VAAPI OR BROVIDEO_WITH_MF)
+    brovideo_test(test_text_quality TIMEOUT 900)
+    set_tests_properties(test_text_quality PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 # The Media Foundation backend: decoder and hardware encoder tests.
 if(BROVIDEO_WITH_MF)
     brovideo_test(test_mf test_pattern.cpp TIMEOUT 600)
