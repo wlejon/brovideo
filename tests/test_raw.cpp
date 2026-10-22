@@ -113,6 +113,10 @@ void test_raw_codec() {
         CHECK(!enc->encode(d, false, [&] { ++released; }, pkt, &err));
         CHECK_EQ(released, 2);
         const auto src = pattern(w, h, 9);
+        Frame under_stride = cpu_frame(src, w, h);
+        under_stride.cpu_stride = w * 4 - 4;
+        CHECK(!enc->encode(under_stride, false, [&] { ++released; }, pkt, &err));
+        CHECK_EQ(released, 3);
         CHECK(enc->encode(cpu_frame(src, w, h), false, [&] { ++released; }, pkt, &err));
         CHECK(pkt.keyframe);
     }
@@ -124,6 +128,9 @@ void test_raw_codec() {
         std::vector<uint8_t> delta = {1, 2, 2, 0x07, 0, 0, 0, 0};
         CHECK(!d2->decode(delta, out, &err));
         CHECK(!is_keyframe(Codec::Raw, delta));
+        CHECK(!is_keyframe(Codec::Raw, std::vector<uint8_t>{0}));
+        CHECK(!is_keyframe(Codec::Raw, std::vector<uint8_t>{0, 2, 2}));
+        CHECK(!is_keyframe(Codec::Raw, std::vector<uint8_t>{0, 0, 2, 0x07, 1, 2, 3, 4}));
         // Truncated, oversized and overrunning packets.
         CHECK(!d2->decode(std::vector<uint8_t>{}, out, &err));
         CHECK(!d2->decode(std::vector<uint8_t>{0, 2}, out, &err));
@@ -133,12 +140,20 @@ void test_raw_codec() {
         CHECK(!d2->decode(overrun, out, &err));
         std::vector<uint8_t> shortlit = {0, 2, 2, 0x06, 1, 2, 3};  // a literal of 4 pixels, 3 bytes
         CHECK(!d2->decode(shortlit, out, &err));
+        std::vector<uint8_t> trailing = {0, 2, 2, 0x07, 9, 8, 7, 6, 0xFF};  // trailing byte after 4 pixels
+        CHECK(!d2->decode(trailing, out, &err));
         std::vector<uint8_t> ok = {0, 2, 2, 0x07, 9, 8, 7, 6};
         CHECK(d2->decode(ok, out, &err));
         CHECK_EQ(out.data.size(), size_t(16));
         CHECK_EQ(out.data[15], uint8_t(6));
-        // After an error, a delta frame must not decode against the old picture.
+        // After an error (including header/sync error), a delta frame must not decode against the old picture.
         CHECK(!d2->decode(overrun, out, &err));
+        CHECK(!d2->decode(delta, out, &err));
+        CHECK(d2->decode(ok, out, &err));
+        CHECK(!d2->decode(std::vector<uint8_t>{0, 2}, out, &err));
+        CHECK(!d2->decode(delta, out, &err));
+        CHECK(d2->decode(ok, out, &err));
+        CHECK(!d2->decode(trailing, out, &err));
         CHECK(!d2->decode(delta, out, &err));
         std::mt19937 rng(99);
         for (int i = 0; i < 5000; ++i) {
@@ -327,9 +342,13 @@ void test_bitstream() {
     // AV1: delimiter, sequence header, then a frame whose frame_type is KEY
     // (0) or INTER (1).
     const std::vector<uint8_t> av1_key = {0x12, 0x00, 0x0a, 0x01, 0x00, 0x32, 0x01, 0x10};
+    const std::vector<uint8_t> av1_unshown_key = {0x12, 0x00, 0x0a, 0x01, 0x00, 0x32, 0x01, 0x00};
+    const std::vector<uint8_t> av1_forbidden_bit = {0x12, 0x00, 0x8a, 0x01, 0x00, 0x32, 0x01, 0x10};
     const std::vector<uint8_t> av1_inter = {0x12, 0x00, 0x0a, 0x01, 0x00, 0x32, 0x01, 0x30};
     const std::vector<uint8_t> av1_no_seq = {0x12, 0x00, 0x32, 0x01, 0x10};
     CHECK(is_keyframe(Codec::AV1, av1_key));
+    CHECK(!is_keyframe(Codec::AV1, av1_unshown_key));
+    CHECK(!is_keyframe(Codec::AV1, av1_forbidden_bit));
     CHECK(!is_keyframe(Codec::AV1, av1_inter));
     CHECK(!is_keyframe(Codec::AV1, av1_no_seq));
     // Truncated or empty input is never a keyframe, and never a crash.

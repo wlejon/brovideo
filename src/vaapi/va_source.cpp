@@ -173,6 +173,11 @@ bool UploadSurface::upload(VADisplay dpy, const Frame& frame, std::string* err) 
         if (err) *err = "CPU frame has no pixels";
         return false;
     }
+    if (frame.width == 0 || frame.height == 0 ||
+        (frame.cpu_stride != 0 && frame.cpu_stride < uint64_t(frame.width) * 4)) {
+        if (err) *err = "CPU frame has invalid dimensions or stride";
+        return false;
+    }
     uint32_t fourcc = 0;
     switch (frame.cpu_format) {
         case PixelFormat::RGBA8: fourcc = VA_FOURCC_RGBA; break;

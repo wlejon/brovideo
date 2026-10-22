@@ -105,6 +105,7 @@ public:
         pos_ += n;
         return p;
     }
+    [[nodiscard]] bool at_end() const { return ok_ && pos_ == b_.size(); }
 
 private:
     bool need(size_t n) {
@@ -146,6 +147,11 @@ protected:
         if (frame.width != config_.width || frame.height != config_.height) {
             release();
             if (err) *err = "frame size differs from the encoder's";
+            return false;
+        }
+        if (frame.cpu_stride != 0 && frame.cpu_stride < uint64_t(frame.width) * 4) {
+            release();
+            if (err) *err = "frame cpu_stride is smaller than width * 4";
             return false;
         }
         const size_t w = frame.width, h = frame.height, row = w * 4;
@@ -232,6 +238,9 @@ public:
             }
             i += size_t(count);
         }
+        if (!r.at_end()) {
+            return fail(err, "trailing bytes in raw packet");
+        }
         if (kind == kDelta) {
             for (size_t k = 0; k < next_.size(); ++k) next_[k] ^= pic_[k];
         }
@@ -258,6 +267,8 @@ private:
     bool fail(std::string* err, const char* what) {
         if (err) *err = what;
         pic_.clear();  // a predicted frame after an error must not decode against a stale picture
+        width_ = 0;
+        height_ = 0;
         return false;
     }
 

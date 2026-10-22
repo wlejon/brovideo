@@ -57,6 +57,19 @@ bool read_leb128(std::span<const uint8_t> b, size_t& pos, uint64_t& value) {
     return false;
 }
 
+bool raw_key(std::span<const uint8_t> b) {
+    if (b.size() < 8 || b[0] != 0) return false;
+    size_t pos = 1;
+    uint64_t w = 0, h = 0;
+    if (!read_leb128(b, pos, w) || !read_leb128(b, pos, h)) return false;
+    constexpr uint64_t kMaxDimension = 16384;
+    constexpr uint64_t kMaxPixels = uint64_t(8192) * 8192;
+    if (w == 0 || h == 0 || w > kMaxDimension || h > kMaxDimension || w * h > kMaxPixels) {
+        return false;
+    }
+    return pos + 5 <= b.size();
+}
+
 bool av1_key(std::span<const uint8_t> b) {
     constexpr int kSequenceHeader = 1, kFrameHeader = 3, kFrame = 6;
     bool have_sequence = false;
@@ -64,10 +77,14 @@ bool av1_key(std::span<const uint8_t> b) {
     size_t pos = 0;
     while (pos < b.size()) {
         const uint8_t h = b[pos++];
+        if (h & 0x80) return false;  // obu_forbidden_bit must be 0
         const int type = (h >> 3) & 0x0F;
         const bool extension = (h & 0x04) != 0;
         const bool has_size = (h & 0x02) != 0;
-        if (extension) ++pos;
+        if (extension) {
+            if (pos >= b.size()) return false;
+            ++pos;
+        }
         uint64_t size = 0;
         if (has_size) {
             if (!read_leb128(b, pos, size)) return false;
@@ -83,9 +100,9 @@ bool av1_key(std::span<const uint8_t> b) {
                 reduced_still = (first & 0x08) != 0;
             } else if ((type == kFrameHeader || type == kFrame) && have_sequence) {
                 if (reduced_still) return true;
-                // show_existing_frame (1), then frame_type (2): 0 is KEY_FRAME.
+                // show_existing_frame (1), frame_type (2): 0 is KEY_FRAME, show_frame (1).
                 if (first & 0x80) return false;
-                return ((first >> 5) & 0x03) == 0;
+                return ((first >> 5) & 0x03) == 0 && (first & 0x10) != 0;
             }
         }
         pos += size_t(size);
@@ -97,7 +114,7 @@ bool av1_key(std::span<const uint8_t> b) {
 
 bool is_keyframe(Codec codec, std::span<const uint8_t> packet) noexcept {
     switch (codec) {
-        case Codec::Raw: return !packet.empty() && packet[0] == 0;  // kind 0: intra (docs/raw.md)
+        case Codec::Raw: return raw_key(packet);  // kind 0: intra (docs/raw.md)
         case Codec::H264: return h264_key(packet);
         case Codec::HEVC: return hevc_key(packet);
         case Codec::AV1: return av1_key(packet);

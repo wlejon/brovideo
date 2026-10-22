@@ -463,6 +463,10 @@ private:
             for (int i = 0; i < 7; ++i) {
                 if (!short_signaling) pp_.ref_frame_idx[i] = uint8_t(r.u(3));
                 if (seq_.frame_id_numbers_present_flag) r.u(seq_.delta_frame_id_length_minus_2 + 2);
+                if (!ref_slots_[pp_.ref_frame_idx[i]].valid) {
+                    if (err) *err = "AV1 inter frame references an invalid reference slot";
+                    return false;
+                }
             }
             if (size_override && !error_resilient) {
                 bool found = false;
