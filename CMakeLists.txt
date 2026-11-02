@@ -123,6 +123,27 @@ if(BROVIDEO_WITH_MF)
     target_link_libraries(brovideo PRIVATE mfplat mfuuid d3d11 dxgi ole32 oleaut32)
 endif()
 
+# ---- VideoToolbox (macOS) ----------------------------------------------------------
+if(APPLE)
+    option(BROVIDEO_WITH_VT "Build the VideoToolbox backend" ON)
+else()
+    set(BROVIDEO_WITH_VT OFF)
+endif()
+if(BROVIDEO_WITH_VT)
+    message(STATUS "brovideo: VideoToolbox backend enabled")
+    target_sources(brovideo PRIVATE
+        src/vt/vt_encoder.cpp
+        src/vt/vt_decoder.cpp
+    )
+    target_compile_definitions(brovideo PRIVATE BROVIDEO_HAVE_VT)
+    target_link_libraries(brovideo PRIVATE
+        "-framework VideoToolbox"
+        "-framework CoreMedia"
+        "-framework CoreVideo"
+        "-framework CoreFoundation"
+    )
+endif()
+
 if(BROVIDEO_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

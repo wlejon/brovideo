@@ -45,5 +45,8 @@ const BackendOps& vaapi_backend();  // src/vaapi: encode
 #if defined(BROVIDEO_HAVE_MF)
 const BackendOps& mf_backend();  // src/mf: decode
 #endif
+#if defined(BROVIDEO_HAVE_VT)
+const BackendOps& vt_backend();  // src/vt: encode + decode (macOS VideoToolbox)
+#endif
 
 }  // namespace brovideo::detail

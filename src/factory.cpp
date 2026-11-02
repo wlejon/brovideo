@@ -56,6 +56,9 @@ const std::vector<const detail::BackendOps*>& backends() {
 #if defined(BROVIDEO_HAVE_MF)
         &detail::mf_backend(),
 #endif
+#if defined(__APPLE__) && defined(BROVIDEO_HAVE_VT)
+        &detail::vt_backend(),
+#endif
         &detail::raw_backend(),
     };
     return list;
