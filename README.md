@@ -4,7 +4,7 @@ Hardware video encode and decode as a dependency-free C++20 library: frames
 (a dmabuf with its acquire fence, or CPU RGBA/BGRA) in, H.264 / HEVC / AV1
 packets out; packets in, pictures (CPU NV12, exported DRM PRIME dmabuf, or a
 D3D11 texture) out. Codecs are reached only through the platform's own APIs:
-VA-API on Linux, Media Foundation on Windows. No ffmpeg, no GPL.
+VA-API on Linux, Media Foundation on Windows, VideoToolbox on macOS. No ffmpeg, no GPL.
 
 In the [bro ecosystem](https://github.com/wlejon/bro/blob/main/docs/ecosystem.md)
 brovideo is the codec layer of broremote (remote desktop), and is meant for
@@ -26,7 +26,8 @@ codec's packet format.
 | VA-API decoder (Linux): H.264, HEVC, AV1; CPU NV12 or DRM PRIME dmabuf output | done, tested on radeonsi (VCN 4) |
 | Media Foundation encoder (Windows): H.264, HEVC, AV1; hardware MFT (D3D11) | done, tested on an RTX 4090 |
 | Media Foundation decoder (Windows): H.264, HEVC, AV1; D3D11 or software | done, tested on an RTX 4090 |
-| Vulkan Video, VideoToolbox | not yet (the backend slot is there) |
+| VideoToolbox encoder & decoder (macOS): H.264, HEVC; hardware or software (`BROVIDEO_WITH_VT`) | done |
+| Vulkan Video | not yet (the backend slot is there) |
 
 ```cpp
 #include <brovideo/brovideo.h>
@@ -63,7 +64,7 @@ ctest --test-dir build
 ```
 
 Options: `BROVIDEO_BUILD_TESTS` (on), `BROVIDEO_WITH_VAAPI` (on on Linux when
-libva is found), `BROVIDEO_WITH_MF` (on on Windows). A plain `git clone` is
+libva is found), `BROVIDEO_WITH_MF` (on on Windows), `BROVIDEO_WITH_VT` (on on macOS). A plain `git clone` is
 enough: brodmabuf is a `bro_dependency()` pin in `CMakeLists.txt`
 (`cmake/bro_deps.cmake`), resolved as an existing `brodmabuf` target, then a
 working tree at `../brodmabuf`, then the head of its main branch, fetched at configure
