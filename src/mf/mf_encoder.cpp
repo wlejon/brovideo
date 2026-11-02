@@ -3,6 +3,7 @@
 #include "brovideo/bitstream.h"
 
 #include <codecapi.h>
+#include <d3d11_1.h>
 #include <mferror.h>
 
 #include <algorithm>
@@ -309,11 +310,15 @@ void MfEncoder::update_sequence_header() {
 bool MfEncoder::encode_frame(const Frame& frame, bool keyframe, const std::function<void()>& release, Packet& out,
                              std::string* err) {
     if (frame.width == 0 || frame.height == 0) return fail_msg(err, "frame is empty");
-    if (!frame.is_cpu()) return fail_msg(err, "Media Foundation encoder requires a CPU frame");
-    if (!frame.cpu) return fail_msg(err, "CPU frame has no pixels");
+    if (!frame.is_cpu()) return fail_msg(err, "Media Foundation encoder requires a CPU or D3D11 frame");
+    if (!frame.cpu && !frame.d3d11) return fail_msg(err, "CPU frame has no pixels");
     if (!mft_ && !open_session(config_, err)) return false;
 
-    if (!convert_to_nv12(frame, err)) return false;
+    bool converted = false;
+    if (frame.d3d11) converted = convert_d3d11_to_nv12(frame.d3d11, frame.cpu ? nullptr : err);
+    if (!converted) {
+        if (!frame.cpu || !convert_to_nv12(frame, err)) return false;
+    }
     release();  // the caller's pixels are now in nv12_
     return encode_nv12(keyframe, out, err);
 }
@@ -336,6 +341,120 @@ bool MfEncoder::apply_config(const EncoderConfig& next, std::string* err) {
         }
         set_u32(codec_api_.Get(), CODECAPI_AVEncCommonMaxBitRate, bps);
     }
+    return true;
+}
+
+bool MfEncoder::convert_d3d11_to_nv12(void* d3d11_tex, std::string* err) {
+    auto* tex = static_cast<ID3D11Texture2D*>(d3d11_tex);
+    if (!tex) return fail_msg(err, "null D3D11 texture");
+    D3D11_TEXTURE2D_DESC sd{};
+    tex->GetDesc(&sd);
+    if (sd.Width == 0 || sd.Height == 0) return fail_msg(err, "empty D3D11 texture");
+    ComPtr<ID3D11Device> dev;
+    tex->GetDevice(&dev);
+    if (!dev) return fail_msg(err, "D3D11 texture has no device");
+    ComPtr<ID3D11DeviceContext> ctx;
+    dev->GetImmediateContext(&ctx);
+    if (!ctx) return fail_msg(err, "D3D11 device has no immediate context");
+
+    const uint32_t w = enc_w_, h = enc_h_;
+    if (vp_src_dev_ != dev.Get() || !vp_dev_ || !vp_ctx_) {
+        vp_src_dev_ = dev.Get();
+        vp_dev_.Reset();
+        vp_ctx_.Reset();
+        vp_enum_.Reset();
+        vp_.Reset();
+        vp_nv12_.Reset();
+        vp_staging_.Reset();
+        vp_out_view_.Reset();
+        vp_in_w_ = vp_in_h_ = vp_out_w_ = vp_out_h_ = 0;
+        if (FAILED(dev.As(&vp_dev_)) || FAILED(ctx.As(&vp_ctx_))) {
+            return fail_msg(err, "D3D11 device does not support ID3D11VideoDevice");
+        }
+    }
+    if (!vp_ || vp_in_w_ != sd.Width || vp_in_h_ != sd.Height || vp_out_w_ != w || vp_out_h_ != h) {
+        vp_enum_.Reset();
+        vp_.Reset();
+        D3D11_VIDEO_PROCESSOR_CONTENT_DESC cd{};
+        cd.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+        cd.InputFrameRate = {fps_, 1};
+        cd.InputWidth = sd.Width;
+        cd.InputHeight = sd.Height;
+        cd.OutputFrameRate = {fps_, 1};
+        cd.OutputWidth = w;
+        cd.OutputHeight = h;
+        cd.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+        if (FAILED(vp_dev_->CreateVideoProcessorEnumerator(&cd, &vp_enum_)) ||
+            FAILED(vp_dev_->CreateVideoProcessor(vp_enum_.Get(), 0, &vp_))) {
+            return fail_msg(err, "CreateVideoProcessor failed");
+        }
+        vp_ctx_->VideoProcessorSetStreamAutoProcessingMode(vp_.Get(), 0, FALSE);
+        ComPtr<ID3D11VideoContext1> vc1;
+        if (SUCCEEDED(vp_ctx_.As(&vc1))) {
+            vc1->VideoProcessorSetStreamColorSpace1(vp_.Get(), 0, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+            vc1->VideoProcessorSetOutputColorSpace1(vp_.Get(), DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
+        }
+        vp_in_w_ = sd.Width;
+        vp_in_h_ = sd.Height;
+    }
+    if (!vp_nv12_ || !vp_staging_ || !vp_out_view_ || vp_out_w_ != w || vp_out_h_ != h) {
+        vp_nv12_.Reset();
+        vp_staging_.Reset();
+        vp_out_view_.Reset();
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = w;
+        td.Height = h;
+        td.MipLevels = 1;
+        td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_NV12;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_RENDER_TARGET;
+        if (FAILED(dev->CreateTexture2D(&td, nullptr, &vp_nv12_))) return fail_msg(err, "CreateTexture2D (NV12) failed");
+        td.Usage = D3D11_USAGE_STAGING;
+        td.BindFlags = 0;
+        td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(dev->CreateTexture2D(&td, nullptr, &vp_staging_))) {
+            return fail_msg(err, "CreateTexture2D (NV12 staging) failed");
+        }
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{};
+        od.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+        if (FAILED(vp_dev_->CreateVideoProcessorOutputView(vp_nv12_.Get(), vp_enum_.Get(), &od, &vp_out_view_))) {
+            return fail_msg(err, "CreateVideoProcessorOutputView failed");
+        }
+        vp_out_w_ = w;
+        vp_out_h_ = h;
+    }
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC id{};
+    id.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    ComPtr<ID3D11VideoProcessorInputView> in_view;
+    if (FAILED(vp_dev_->CreateVideoProcessorInputView(tex, vp_enum_.Get(), &id, &in_view))) {
+        return fail_msg(err, "CreateVideoProcessorInputView failed");
+    }
+    RECT src_rc{0, 0, LONG(sd.Width), LONG(sd.Height)};
+    RECT dst_rc{0, 0, LONG(w), LONG(h)};
+    vp_ctx_->VideoProcessorSetStreamSourceRect(vp_.Get(), 0, TRUE, &src_rc);
+    vp_ctx_->VideoProcessorSetStreamDestRect(vp_.Get(), 0, TRUE, &dst_rc);
+    vp_ctx_->VideoProcessorSetOutputTargetRect(vp_.Get(), TRUE, &dst_rc);
+    D3D11_VIDEO_PROCESSOR_STREAM st{};
+    st.Enable = TRUE;
+    st.pInputSurface = in_view.Get();
+    if (FAILED(vp_ctx_->VideoProcessorBlt(vp_.Get(), vp_out_view_.Get(), 0, 1, &st))) {
+        return fail_msg(err, "VideoProcessorBlt failed");
+    }
+    ctx->CopyResource(vp_staging_.Get(), vp_nv12_.Get());
+    D3D11_MAPPED_SUBRESOURCE map{};
+    if (FAILED(ctx->Map(vp_staging_.Get(), 0, D3D11_MAP_READ, 0, &map))) {
+        return fail_msg(err, "Map(NV12 staging) failed");
+    }
+    nv12_.resize(size_t(w) * h * 3 / 2);
+    const auto* src_y = static_cast<const uint8_t*>(map.pData);
+    const uint8_t* src_uv = src_y + size_t(map.RowPitch) * h;
+    uint8_t* dst_y = nv12_.data();
+    uint8_t* dst_uv = nv12_.data() + size_t(w) * h;
+    for (uint32_t y = 0; y < h; ++y) std::memcpy(dst_y + size_t(y) * w, src_y + size_t(y) * map.RowPitch, w);
+    for (uint32_t y = 0; y < h / 2; ++y) std::memcpy(dst_uv + size_t(y) * w, src_uv + size_t(y) * map.RowPitch, w);
+    ctx->Unmap(vp_staging_.Get(), 0);
     return true;
 }
 

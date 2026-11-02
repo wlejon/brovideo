@@ -48,6 +48,7 @@ struct Frame {
     const uint8_t* cpu = nullptr;
     uint32_t cpu_stride = 0;
     PixelFormat cpu_format = PixelFormat::RGBA8;  // RGBA8 or BGRA8
+    void* d3d11 = nullptr;      // D3D11: optional ID3D11Texture2D* (RGBA8 or BGRA8) accompanying the frame
     int64_t pts_ns = 0;         // carried through to the packet unchanged
     // What differs from the previous frame given to this encoder (its
     // damage), in frame pixels, when the source knows: a compositor does.

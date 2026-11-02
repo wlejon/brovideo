@@ -42,6 +42,7 @@ private:
     void close_session();
     void update_sequence_header();
     bool convert_to_nv12(const Frame& frame, std::string* err);
+    bool convert_d3d11_to_nv12(void* d3d11_tex, std::string* err);
     bool encode_nv12(bool keyframe, Packet& out, std::string* err);
     bool pull_output(Packet& out, bool& got_packet, std::string* err);
     void finish_packet(bool keyframe, Packet& out);
@@ -68,6 +69,15 @@ private:
 
     std::vector<uint8_t> nv12_;
     std::vector<uint8_t> seq_header_;
+    ID3D11Device* vp_src_dev_ = nullptr;
+    ComPtr<ID3D11VideoDevice> vp_dev_;
+    ComPtr<ID3D11VideoContext> vp_ctx_;
+    ComPtr<ID3D11VideoProcessorEnumerator> vp_enum_;
+    ComPtr<ID3D11VideoProcessor> vp_;
+    ComPtr<ID3D11Texture2D> vp_nv12_;
+    ComPtr<ID3D11Texture2D> vp_staging_;
+    ComPtr<ID3D11VideoProcessorOutputView> vp_out_view_;
+    uint32_t vp_in_w_ = 0, vp_in_h_ = 0, vp_out_w_ = 0, vp_out_h_ = 0;
 };
 
 }  // namespace brovideo::mf
